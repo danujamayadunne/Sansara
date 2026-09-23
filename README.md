@@ -28,7 +28,10 @@ Inspired by Apple's human interface guidelines and modern vertical sidebar tab o
 | <kbd>⌘</kbd> + <kbd>L</kbd> | Focus Address Bar / Search |
 | <kbd>⌘</kbd> + <kbd>R</kbd> | Reload Current Page |
 | <kbd>⌘</kbd> + <kbd>[</kbd> | Navigate Back |
-| <kbd>⌘</kbd> + <kbd>]</kbd> | Navigate Forward |
+| <kbd>⌘</kbd> + <kbd>,</kbd> | Preferences / Settings |
+| <kbd>⌘</kbd> + <kbd>Y</kbd> | Show All History |
+| <kbd>⌘</kbd> + <kbd>D</kbd> | Bookmark Current Tab |
+| <kbd>⌥</kbd> + <kbd>⌘</kbd> + <kbd>B</kbd> | Show Bookmarks |
 | <kbd>⌘</kbd> + <kbd>1</kbd> .. <kbd>9</kbd> | Switch to Tab 1–9 |
 | <kbd>⌃</kbd> + <kbd>⌘</kbd> + <kbd>S</kbd> | Toggle Sidebar |
 
@@ -66,22 +69,29 @@ To run the unit test suite:
 ```text
 Sources/Sansara/
 ├── App/
-│   └── AppDelegate.swift           # Menu bar items and app lifecycle
+│   └── AppDelegate.swift           # Menu bar items, dynamic menus, and app lifecycle
 ├── Core/
 │   ├── BrowserTab.swift            # Tab state model, lazy WKWebView, KVO observers
-│   ├── TabManager.swift            # Central tab coordinator, history stack
-│   ├── URLHelper.swift             # URL heuristics and Google search routing
+│   ├── TabManager.swift            # Central tab coordinator, history stack, groups
+│   ├── SettingsManager.swift       # Preferences for search engine, appearance, privacy
+│   ├── HistoryManager.swift        # Visited URL persistence, search, and deduplication
+│   ├── BookmarkManager.swift       # Persistent bookmarks store with search & tagging
+│   ├── URLHelper.swift             # URL heuristics and dynamic search routing
 │   └── FaviconService.swift        # Favicon resolution and host-based caching
 ├── UI/
+│   ├── Bookmarks/
+│   │   └── BookmarksWindowController.swift # Bookmarks manager window & editor
 │   ├── Content/
-│   │   └── BrowserContentViewController.swift # Coordinates navigation bar & content
-│   ├── Navigation/
-│   │   └── NavigationBarView.swift # Minimal back/forward/reload, address bar, progress bar
+│   │   └── BrowserContentViewController.swift # Coordinates navigation & omnibar
+│   ├── History/
+│   │   └── HistoryWindowController.swift   # History manager window & search
 │   ├── NewTab/
-│   │   └── NewTabView.swift        # Centered Google search field
+│   │   └── NewTabView.swift        # Centered search field
+│   ├── Settings/
+│   │   └── SettingsWindowController.swift  # Native Preferences / Settings window
 │   ├── Sidebar/
-│   │   ├── SidebarViewController.swift # Vertical tabs list, "+ New Tab" button, context menu
-│   │   └── TabItemView.swift       # Tab item cell with hover close button & favicon
+│   │   ├── SidebarViewController.swift # Vertical tabs list & tab groups
+│   │   └── TabItemView.swift       # Tab item cell with hover close & favicon
 │   ├── Web/
 │   │   └── WebContainerView.swift  # Active WKWebView and native error recovery view
 │   └── Window/
