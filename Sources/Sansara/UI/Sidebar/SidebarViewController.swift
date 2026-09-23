@@ -2,6 +2,7 @@ import AppKit
 
 private final class SidebarTableView: NSTableView {
     var onMenuForTab: ((Int) -> NSMenu?)?
+    var onMenuForEmptyArea: (() -> NSMenu?)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -9,7 +10,18 @@ private final class SidebarTableView: NSTableView {
         if row >= 0 {
             return onMenuForTab?(row)
         }
-        return super.menu(for: event)
+        return onMenuForEmptyArea?() ?? super.menu(for: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        let menuToPop = (row >= 0 ? onMenuForTab?(row) : onMenuForEmptyArea?()) ?? self.menu(for: event)
+        if let menu = menuToPop {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        } else {
+            super.rightMouseDown(with: event)
+        }
     }
 
     override func resize(withOldSuperviewSize oldSize: NSSize) {
@@ -32,13 +44,26 @@ private final class SidebarTableView: NSTableView {
     }
 }
 
-/// Row view that completely eliminates any system blue selection highlights
+/// Row view that eliminates system blue selection while providing clean drag feedback
 private final class CleanTableRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {}
     override func drawBackground(in dirtyRect: NSRect) {}
+
+    override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {
+        if draggingDestinationFeedbackStyle == .regular {
+            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1), xRadius: 7, yRadius: 7)
+            NSColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.12).setFill()
+            path.fill()
+            NSColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.55).setStroke()
+            path.lineWidth = 1.5
+            path.stroke()
+        } else {
+            super.drawDraggingDestinationFeedback(in: dirtyRect)
+        }
+    }
 }
 
-/// Cell representing the "+ New tab" action directly after the last tab item
+/// Cell representing the "+ New tab" action
 public final class NewTabActionCellView: NSTableCellView {
     public static let identifier = NSUserInterfaceItemIdentifier("NewTabActionCellViewIdentifier")
 
@@ -72,12 +97,14 @@ public final class NewTabActionCellView: NSTableCellView {
         let plusSymbol = NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")
         let plusConfig = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .medium)
         plusImageView.image = plusSymbol?.withSymbolConfiguration(plusConfig)
-        plusImageView.contentTintColor = NSColor(white: 0.70, alpha: 1.0)
+        plusImageView.contentTintColor = .secondaryLabelColor
         plusImageView.translatesAutoresizingMaskIntoConstraints = false
         containerBox.addSubview(plusImageView)
 
+        label.isEditable = false
+        label.isSelectable = false
         label.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        label.textColor = NSColor(white: 0.70, alpha: 1.0)
+        label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         containerBox.addSubview(label)
 
@@ -115,7 +142,7 @@ public final class NewTabActionCellView: NSTableCellView {
 
     public override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        containerBox.fillColor = NSColor(white: 0.96, alpha: 1.0)
+        containerBox.fillColor = NSColor.quaternaryLabelColor
         label.textColor = .labelColor
         plusImageView.contentTintColor = .labelColor
     }
@@ -123,12 +150,12 @@ public final class NewTabActionCellView: NSTableCellView {
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         containerBox.fillColor = .clear
-        label.textColor = NSColor(white: 0.70, alpha: 1.0)
-        plusImageView.contentTintColor = NSColor(white: 0.70, alpha: 1.0)
+        label.textColor = .secondaryLabelColor
+        plusImageView.contentTintColor = .secondaryLabelColor
     }
 
     public override func mouseDown(with event: NSEvent) {
-        containerBox.fillColor = NSColor(white: 0.92, alpha: 1.0)
+        containerBox.fillColor = NSColor.tertiaryLabelColor.withAlphaComponent(0.3)
         onClick?()
     }
 
@@ -137,18 +164,28 @@ public final class NewTabActionCellView: NSTableCellView {
     }
 }
 
-/// Pure-white Arc-style sidebar controller matching target design.
+
+
+/// Arc-style sidebar controller featuring pure white in light mode and matte black in dark mode.
 public final class SidebarViewController: NSViewController {
+
+    private enum SidebarItem {
+        case tab(BrowserTab, isInsideGroup: Bool, groupColor: TabGroupColor?)
+        case folder(TabGroup, tabCount: Int)
+        case newTabAction
+    }
 
     public let tabManager: TabManager
     public var onToggleSidebar: (() -> Void)?
+
+    private var sidebarItems: [SidebarItem] = []
+    private var lastAddTabTimestamp: TimeInterval = 0
 
     // Top navigation buttons
     private let navStack = NSStackView()
     private var backButton: NSButton!
     private var forwardButton: NSButton!
     private var reloadButton: NSButton!
-    private var newTabButton: NSButton!
 
     // Tabs table
     private let scrollView = NSScrollView()
@@ -164,20 +201,18 @@ public final class SidebarViewController: NSViewController {
     }
 
     public override func loadView() {
-        let whiteView = NSView()
-        whiteView.wantsLayer = true
-        whiteView.layer?.backgroundColor = NSColor.white.cgColor
-        view = whiteView
+        view = SidebarBackgroundView()
     }
 
     public override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         setupTableView()
+        reloadData()
     }
 
     private func setupUI() {
-        // Top navigation buttons: Back, Forward, Reload, New Tab
+        // Top navigation buttons: Back, Forward, Reload
         navStack.orientation = .horizontal
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
@@ -191,7 +226,7 @@ public final class SidebarViewController: NSViewController {
         navStack.addArrangedSubview(forwardButton)
         navStack.addArrangedSubview(reloadButton)
 
-        // Scroll view for tabs (fills from below nav to bottom)
+        // Scroll view for tabs
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
@@ -200,8 +235,8 @@ public final class SidebarViewController: NSViewController {
         view.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            // Inset below traffic lights
-            navStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 32),
+            // Dynamic top spacing respecting system titlebar area
+            navStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             navStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
             scrollView.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
@@ -218,7 +253,7 @@ public final class SidebarViewController: NSViewController {
         let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
         let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         button.image = symbolImage?.withSymbolConfiguration(config)
-        button.contentTintColor = NSColor(white: 0.35, alpha: 1.0)
+        button.contentTintColor = .secondaryLabelColor
         button.toolTip = tooltip
         button.wantsLayer = true
         button.layer?.cornerRadius = 5.0
@@ -230,13 +265,12 @@ public final class SidebarViewController: NSViewController {
         return button
     }
 
-    /// Update navigation button enabled states based on current tab
     public func updateNavButtons() {
         let tab = tabManager.activeTab
         backButton.isEnabled = tab?.canGoBack ?? false
         forwardButton.isEnabled = tab?.canGoForward ?? false
-        backButton.contentTintColor = backButton.isEnabled ? NSColor(white: 0.35, alpha: 1.0) : NSColor(white: 0.75, alpha: 1.0)
-        forwardButton.contentTintColor = forwardButton.isEnabled ? NSColor(white: 0.35, alpha: 1.0) : NSColor(white: 0.75, alpha: 1.0)
+        backButton.contentTintColor = backButton.isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
+        forwardButton.contentTintColor = forwardButton.isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
     }
 
     @objc private func didClickBack() {
@@ -268,10 +302,20 @@ public final class SidebarViewController: NSViewController {
         tableView.dataSource = self
         tableView.target = self
         tableView.action = #selector(didSelectTableRow)
+        tableView.doubleAction = #selector(didDoubleClickTableRow)
 
         tableView.onMenuForTab = { [weak self] row in
             self?.createContextMenu(for: row)
         }
+        tableView.onMenuForEmptyArea = { [weak self] in
+            self?.createEmptyAreaContextMenu()
+        }
+
+        tableView.registerForDraggedTypes([
+            NSPasteboard.PasteboardType.string,
+            NSPasteboard.PasteboardType("com.sansara.browser.tab")
+        ])
+        tableView.setDraggingSourceOperationMask(.move, forLocal: true)
 
         scrollView.documentView = tableView
     }
@@ -285,7 +329,36 @@ public final class SidebarViewController: NSViewController {
         tableView.sizeLastColumnToFit()
     }
 
+    private func updateSidebarItems() {
+        var items: [SidebarItem] = []
+        var processedGroupIds = Set<UUID>()
+
+        for tab in tabManager.tabs {
+            if let groupId = tab.groupId, let group = tabManager.groups.first(where: { $0.id == groupId }) {
+                if !processedGroupIds.contains(groupId) {
+                    processedGroupIds.insert(groupId)
+                    let groupTabs = tabManager.tabs.filter { $0.groupId == groupId }
+                    items.append(.folder(group, tabCount: groupTabs.count))
+                }
+                if !group.isCollapsed {
+                    items.append(.tab(tab, isInsideGroup: true, groupColor: group.color))
+                }
+            } else {
+                items.append(.tab(tab, isInsideGroup: false, groupColor: nil))
+            }
+        }
+
+        // Empty groups
+        for group in tabManager.groups where !processedGroupIds.contains(group.id) {
+            items.append(.folder(group, tabCount: 0))
+        }
+
+        items.append(.newTabAction)
+        sidebarItems = items
+    }
+
     public func reloadData() {
+        updateSidebarItems()
         tableView.reloadData()
     }
 
@@ -293,23 +366,200 @@ public final class SidebarViewController: NSViewController {
         tabManager.createTab(url: nil, select: true)
     }
 
+    @objc private func didClickNewFolder() {
+        promptCreateFolder()
+    }
+
+    public func promptCreateFolder(initialTabId: UUID? = nil) {
+        TabGroupDialog.show(title: "New Tab Folder", actionButtonTitle: "Create") { [weak self] name, color in
+            guard let self = self, let name = name, let color = color else { return }
+            let tabIds = initialTabId != nil ? [initialTabId!] : []
+            self.tabManager.createGroup(name: name, color: color, tabIds: tabIds)
+            self.reloadData()
+        }
+    }
+
     @objc private func didSelectTableRow() {
+        if ProcessInfo.processInfo.systemUptime - lastAddTabTimestamp < 0.35 {
+            return
+        }
+        if let event = NSApp.currentEvent {
+            let pointInTable = tableView.convert(event.locationInWindow, from: nil)
+            let row = tableView.row(at: pointInTable)
+            if row >= 0, let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderItemView {
+                if cell.isPointInAddButton(event.locationInWindow) {
+                    return
+                }
+            }
+            if row >= 0, let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabItemView {
+                if cell.isPointInCloseButton(event.locationInWindow) {
+                    return
+                }
+            }
+        }
+
         let clickedRow = tableView.clickedRow
-        if clickedRow >= 0 && clickedRow < tabManager.tabs.count {
-            tabManager.selectTab(id: tabManager.tabs[clickedRow].id)
-        } else if clickedRow == tabManager.tabs.count {
+        guard clickedRow >= 0 && clickedRow < sidebarItems.count else { return }
+
+        switch sidebarItems[clickedRow] {
+        case .tab(let tab, _, _):
+            tabManager.selectTab(id: tab.id)
+        case .folder(let group, _):
+            tabManager.toggleGroupCollapsed(id: group.id)
+            reloadData()
+        case .newTabAction:
             didClickNewTab()
         }
     }
 
+    @objc private func didDoubleClickTableRow() {
+        var row = tableView.clickedRow
+        if row < 0, let event = NSApp.currentEvent {
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            row = tableView.row(at: point)
+        }
+        guard row >= 0 && row < sidebarItems.count else { return }
+
+        switch sidebarItems[row] {
+        case .tab(let tab, _, _):
+            startRenameTab(tab, at: row)
+        case .folder(let group, _):
+            promptRenameFolder(group)
+        case .newTabAction:
+            break
+        }
+    }
+
     private func createContextMenu(for row: Int) -> NSMenu? {
-        guard row >= 0 && row < tabManager.tabs.count else { return nil }
-        let tab = tabManager.tabs[row]
+        guard row >= 0 && row < sidebarItems.count else { return createEmptyAreaContextMenu() }
+
+        switch sidebarItems[row] {
+        case .folder(let group, _):
+            return createFolderContextMenu(for: group)
+        case .tab(let tab, _, _):
+            return createTabContextMenu(for: tab)
+        case .newTabAction:
+            return createEmptyAreaContextMenu()
+        }
+    }
+
+    private func createEmptyAreaContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let newTabItem = NSMenuItem(title: "New Tab", action: #selector(didClickNewTab), keyEquivalent: "t")
+        newTabItem.target = self
+        menu.addItem(newTabItem)
+
+        let newFolderItem = NSMenuItem(title: "New Folder…", action: #selector(didClickNewFolder), keyEquivalent: "")
+        newFolderItem.target = self
+        menu.addItem(newFolderItem)
+
+        if !tabManager.closedHistory.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            let reopenItem = NSMenuItem(title: "Reopen Closed Tab", action: #selector(menuReopenClosedTab), keyEquivalent: "T")
+            reopenItem.target = self
+            menu.addItem(reopenItem)
+        }
+        return menu
+    }
+
+    @objc private func menuReopenClosedTab() {
+        tabManager.reopenClosedTab()
+    }
+
+    public func createFolderContextMenu(for group: TabGroup) -> NSMenu {
+        let menu = NSMenu()
+
+        let newTabInFolder = NSMenuItem(title: "New Tab in Folder", action: #selector(menuAddTabToFolder(_:)), keyEquivalent: "")
+        newTabInFolder.target = self
+        newTabInFolder.representedObject = group
+        menu.addItem(newTabInFolder)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let renameItem = NSMenuItem(title: "Rename Folder…", action: #selector(menuRenameFolder(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = group
+        menu.addItem(renameItem)
+
+        // Change color submenu
+        let colorMenuItem = NSMenuItem(title: "Change Color", action: nil, keyEquivalent: "")
+        let colorSubmenu = NSMenu()
+        for color in TabGroupColor.allCases {
+            let item = NSMenuItem(title: color.rawValue, action: #selector(menuChangeFolderColor(_:)), keyEquivalent: "")
+            item.target = self
+            item.image = color.circleImage(size: 12)
+            item.representedObject = (group, color)
+            if color == group.color {
+                item.state = .on
+            }
+            colorSubmenu.addItem(item)
+        }
+        colorMenuItem.submenu = colorSubmenu
+        menu.addItem(colorMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let ungroupItem = NSMenuItem(title: "Ungroup Folder", action: #selector(menuUngroupFolder(_:)), keyEquivalent: "")
+        ungroupItem.target = self
+        ungroupItem.representedObject = group
+        menu.addItem(ungroupItem)
+
+        let closeFolderItem = NSMenuItem(title: "Close Folder", action: #selector(menuCloseFolder(_:)), keyEquivalent: "")
+        closeFolderItem.target = self
+        closeFolderItem.representedObject = group
+        menu.addItem(closeFolderItem)
+
+        return menu
+    }
+
+    public func createTabContextMenu(for tab: BrowserTab) -> NSMenu {
         let menu = NSMenu()
 
         let newTabItem = NSMenuItem(title: "New Tab", action: #selector(didClickNewTab), keyEquivalent: "t")
         newTabItem.target = self
         menu.addItem(newTabItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Tab Grouping actions
+        let renameTabItem = NSMenuItem(title: "Rename Tab…", action: #selector(menuRenameTab(_:)), keyEquivalent: "")
+        renameTabItem.target = self
+        renameTabItem.representedObject = tab
+        menu.addItem(renameTabItem)
+
+        let newFolderWithTab = NSMenuItem(title: "New Folder with Tab…", action: #selector(menuNewFolderWithTab(_:)), keyEquivalent: "")
+        newFolderWithTab.target = self
+        newFolderWithTab.representedObject = tab
+        menu.addItem(newFolderWithTab)
+
+        let moveToFolderItem = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
+        let folderSubmenu = NSMenu()
+
+        if !tabManager.groups.isEmpty {
+            for group in tabManager.groups {
+                let item = NSMenuItem(title: group.name, action: #selector(menuMoveTabToGroup(_:)), keyEquivalent: "")
+                item.target = self
+                item.image = group.color.circleImage(size: 12)
+                item.representedObject = (tab, group)
+                if tab.groupId == group.id {
+                    item.state = .on
+                }
+                folderSubmenu.addItem(item)
+            }
+            if tab.groupId != nil {
+                folderSubmenu.addItem(NSMenuItem.separator())
+                let removeItem = NSMenuItem(title: "Remove from Folder", action: #selector(menuRemoveTabFromFolder(_:)), keyEquivalent: "")
+                removeItem.target = self
+                removeItem.representedObject = tab
+                folderSubmenu.addItem(removeItem)
+            }
+        } else {
+            let emptyItem = NSMenuItem(title: "No Folders", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            folderSubmenu.addItem(emptyItem)
+        }
+        moveToFolderItem.submenu = folderSubmenu
+        menu.addItem(moveToFolderItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -338,6 +588,87 @@ public final class SidebarViewController: NSViewController {
         return menu
     }
 
+    // MARK: - Context Menu Handlers
+
+    @objc private func menuAddTabToFolder(_ sender: NSMenuItem) {
+        guard let group = sender.representedObject as? TabGroup else { return }
+        tabManager.createTab(inGroup: group.id, select: true)
+    }
+
+    public func promptRenameFolder(_ group: TabGroup) {
+        TabGroupDialog.promptRename(currentName: group.name) { [weak self] newName in
+            guard let self = self, let newName = newName else { return }
+            self.tabManager.renameGroup(id: group.id, newName: newName)
+            self.reloadData()
+        }
+    }
+
+    public func startRenameTab(_ tab: BrowserTab, at row: Int? = nil) {
+        let targetRow: Int? = row ?? sidebarItems.firstIndex(where: {
+            if case .tab(let t, _, _) = $0 { return t.id == tab.id }
+            return false
+        })
+        if let r = targetRow, r >= 0 && r < sidebarItems.count,
+           let cell = tableView.view(atColumn: 0, row: r, makeIfNecessary: true) as? TabItemView {
+            cell.startEditing()
+            return
+        }
+        promptRenameTab(tab)
+    }
+
+    public func promptRenameTab(_ tab: BrowserTab) {
+        TabGroupDialog.promptRenameTab(currentName: tab.title) { [weak self] newTitle in
+            guard let self = self, let newTitle = newTitle else { return }
+            tab.rename(to: newTitle)
+            self.reloadData()
+        }
+    }
+
+    @objc private func menuRenameFolder(_ sender: NSMenuItem) {
+        guard let group = sender.representedObject as? TabGroup else { return }
+        promptRenameFolder(group)
+    }
+
+    @objc private func menuRenameTab(_ sender: NSMenuItem) {
+        guard let tab = sender.representedObject as? BrowserTab else { return }
+        startRenameTab(tab)
+    }
+
+    @objc private func menuChangeFolderColor(_ sender: NSMenuItem) {
+        guard let tuple = sender.representedObject as? (TabGroup, TabGroupColor) else { return }
+        tabManager.setGroupColor(id: tuple.0.id, color: tuple.1)
+        reloadData()
+    }
+
+    @objc private func menuUngroupFolder(_ sender: NSMenuItem) {
+        guard let group = sender.representedObject as? TabGroup else { return }
+        tabManager.ungroup(groupId: group.id)
+        reloadData()
+    }
+
+    @objc private func menuCloseFolder(_ sender: NSMenuItem) {
+        guard let group = sender.representedObject as? TabGroup else { return }
+        tabManager.closeGroup(groupId: group.id)
+        reloadData()
+    }
+
+    @objc private func menuNewFolderWithTab(_ sender: NSMenuItem) {
+        guard let tab = sender.representedObject as? BrowserTab else { return }
+        promptCreateFolder(initialTabId: tab.id)
+    }
+
+    @objc private func menuMoveTabToGroup(_ sender: NSMenuItem) {
+        guard let tuple = sender.representedObject as? (BrowserTab, TabGroup) else { return }
+        tabManager.addTabs([tuple.0.id], to: tuple.1.id)
+        reloadData()
+    }
+
+    @objc private func menuRemoveTabFromFolder(_ sender: NSMenuItem) {
+        guard let tab = sender.representedObject as? BrowserTab else { return }
+        tabManager.removeTabFromGroup(id: tab.id)
+        reloadData()
+    }
+
     @objc private func menuReloadTab(_ sender: NSMenuItem) {
         guard let tab = sender.representedObject as? BrowserTab else { return }
         tab.reload()
@@ -363,12 +694,10 @@ public final class SidebarViewController: NSViewController {
 extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
 
     public func numberOfRows(in tableView: NSTableView) -> Int {
-        // Open tabs count + 1 row for "+ New tab"
-        return tabManager.tabs.count + 1
+        return sidebarItems.count
     }
 
     public func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        // Prevent system from drawing any blue selection box
         return false
     }
 
@@ -376,10 +705,54 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
         return CleanTableRowView()
     }
 
-    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if row < tabManager.tabs.count {
-            let tab = tabManager.tabs[row]
+    public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard row >= 0 && row < sidebarItems.count else { return 28 }
+        switch sidebarItems[row] {
+        case .folder:
+            return 30
+        case .tab:
+            return 28
+        case .newTabAction:
+            return 26
+        }
+    }
 
+    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row >= 0 && row < sidebarItems.count else { return nil }
+
+        switch sidebarItems[row] {
+        case .folder(let group, let count):
+            let cell: FolderItemView
+            if let reused = tableView.makeView(withIdentifier: FolderItemView.identifier, owner: self) as? FolderItemView {
+                cell = reused
+            } else {
+                cell = FolderItemView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 30))
+                cell.identifier = FolderItemView.identifier
+            }
+
+            cell.configure(with: group, tabCount: count)
+            cell.onToggleCollapse = { [weak self, weak group] in
+                guard let self = self, let group = group else { return }
+                self.tabManager.toggleGroupCollapsed(id: group.id)
+                self.reloadData()
+            }
+            cell.onDoubleClick = { [weak self, weak group] in
+                guard let self = self, let group = group else { return }
+                self.promptRenameFolder(group)
+            }
+            cell.onAddTab = { [weak self, weak group] in
+                guard let self = self, let group = group else { return }
+                self.lastAddTabTimestamp = ProcessInfo.processInfo.systemUptime
+                self.tabManager.createTab(inGroup: group.id, select: true)
+                self.reloadData()
+            }
+            cell.onContextMenu = { [weak self, weak group] in
+                guard let self = self, let group = group else { return nil }
+                return self.createFolderContextMenu(for: group)
+            }
+            return cell
+
+        case .tab(let tab, let isInsideGroup, let groupColor):
             let cell: TabItemView
             if let reused = tableView.makeView(withIdentifier: TabItemView.identifier, owner: self) as? TabItemView {
                 cell = reused
@@ -389,29 +762,145 @@ extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
             }
 
             let isSelected = (tab.id == tabManager.activeTabId)
-            cell.configure(with: tab, isSelected: isSelected)
+            cell.configure(with: tab, isSelected: isSelected, isInsideGroup: isInsideGroup, groupColor: groupColor)
 
+            cell.onDoubleClick = { [weak cell] in
+                cell?.startEditing()
+            }
             cell.onClose = { [weak self, weak tab] in
                 guard let self = self, let tab = tab else { return }
                 self.tabManager.closeTab(id: tab.id)
             }
-
+            cell.onContextMenu = { [weak self, weak tab] in
+                guard let self = self, let tab = tab else { return nil }
+                return self.createTabContextMenu(for: tab)
+            }
             return cell
-        } else {
-            // "+ New tab" action row immediately following the last tab
+
+        case .newTabAction:
             let cell: NewTabActionCellView
             if let reused = tableView.makeView(withIdentifier: NewTabActionCellView.identifier, owner: self) as? NewTabActionCellView {
                 cell = reused
             } else {
-                cell = NewTabActionCellView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 28))
+                cell = NewTabActionCellView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 26))
                 cell.identifier = NewTabActionCellView.identifier
             }
-
             cell.onClick = { [weak self] in
                 self?.didClickNewTab()
             }
-
             return cell
+        }
+    }
+
+    // MARK: - Drag and Drop (Tab to Folder & Tab Reordering)
+
+    public func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard row >= 0 && row < sidebarItems.count else { return nil }
+        switch sidebarItems[row] {
+        case .tab(let tab, _, _):
+            let item = NSPasteboardItem()
+            item.setString(tab.id.uuidString, forType: NSPasteboard.PasteboardType("com.sansara.browser.tab"))
+            item.setString(tab.id.uuidString, forType: .string)
+            return item
+        case .folder, .newTabAction:
+            return nil
+        }
+    }
+
+    public func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard let pboard = info.draggingPasteboard.string(forType: NSPasteboard.PasteboardType("com.sansara.browser.tab")) ?? info.draggingPasteboard.string(forType: .string),
+              UUID(uuidString: pboard) != nil else {
+            return []
+        }
+
+        if row >= 0 && row < sidebarItems.count {
+            switch sidebarItems[row] {
+            case .folder:
+                return .move
+            case .tab:
+                return .move
+            case .newTabAction:
+                return dropOperation == .above ? .move : []
+            }
+        } else if row == sidebarItems.count {
+            return .move
+        }
+
+        return []
+    }
+
+    public func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard let str = info.draggingPasteboard.string(forType: NSPasteboard.PasteboardType("com.sansara.browser.tab")) ?? info.draggingPasteboard.string(forType: .string),
+              let draggedTabId = UUID(uuidString: str) else {
+            return false
+        }
+
+        // Dropping directly ON a row
+        if dropOperation == .on && row >= 0 && row < sidebarItems.count {
+            if case .folder(let group, _) = sidebarItems[row] {
+                // Drop tab onto a folder -> adds tab to folder
+                tabManager.addTabs([draggedTabId], to: group.id)
+                group.isCollapsed = false
+                reloadData()
+                return true
+            } else if case .tab(let targetTab, _, _) = sidebarItems[row] {
+                guard draggedTabId != targetTab.id else { return false }
+                if let targetGroupId = targetTab.groupId {
+                    tabManager.addTabs([draggedTabId], to: targetGroupId)
+                    tabManager.moveTab(id: draggedTabId, beforeOrAfter: targetTab.id, placeAfter: true)
+                } else {
+                    // Auto-create folder with default blue containing both targetTab and draggedTab
+                    let newGroup = tabManager.createGroup(name: "New Folder", color: .blue, tabIds: [targetTab.id, draggedTabId])
+                    newGroup.isCollapsed = false
+                }
+                reloadData()
+                return true
+            }
+        }
+
+        // Dropping ABOVE or between rows
+        if row >= 0 && row < sidebarItems.count {
+            switch sidebarItems[row] {
+            case .folder(let group, _):
+                // Dropped right above a folder header: place ungrouped before this folder
+                tabManager.removeTabFromGroup(id: draggedTabId)
+                if let firstTab = tabManager.tabs.first(where: { $0.groupId == group.id }) {
+                    tabManager.moveTab(id: draggedTabId, beforeOrAfter: firstTab.id, placeAfter: false)
+                }
+                reloadData()
+                return true
+
+            case .tab(let targetTab, let isInsideGroup, _):
+                if isInsideGroup, let groupId = targetTab.groupId {
+                    tabManager.addTabs([draggedTabId], to: groupId)
+                } else {
+                    tabManager.removeTabFromGroup(id: draggedTabId)
+                }
+                tabManager.moveTab(id: draggedTabId, beforeOrAfter: targetTab.id, placeAfter: false)
+                reloadData()
+                return true
+
+            case .newTabAction:
+                tabManager.removeTabFromGroup(id: draggedTabId)
+                tabManager.moveTabToEnd(id: draggedTabId)
+                reloadData()
+                return true
+            }
+        } else {
+            tabManager.removeTabFromGroup(id: draggedTabId)
+            tabManager.moveTabToEnd(id: draggedTabId)
+            reloadData()
+            return true
         }
     }
 }
