@@ -15,6 +15,9 @@ swiftc \
     -framework AppKit \
     -framework WebKit \
     Sources/Sansara/Core/*.swift \
+    Sources/Sansara/UI/Sidebar/*.swift \
+    Sources/Sansara/UI/Content/ContentColors.swift \
+    Sources/Sansara/UI/Content/TabStripeColors.swift \
     Tests/SansaraTests/SansaraTests.swift \
     -o "$PROJECT_DIR/build/test_runner"
 
