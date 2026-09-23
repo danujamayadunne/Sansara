@@ -44,10 +44,8 @@ public enum URLHelper {
             }
         }
 
-        // 4. Default to search query
-        let queryAllowed = CharacterSet.urlQueryAllowed
-        let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? trimmed
-        return URL(string: searchEndpoint + encoded) ?? URL(string: "https://www.google.com")!
+        // 4. Default to search query using configured search engine
+        return SettingsManager.shared.searchEngine.searchURL(for: trimmed)
     }
 
     /// Prettifies a URL for clean display in the address bar (e.g. omitting https:// for clarity)
