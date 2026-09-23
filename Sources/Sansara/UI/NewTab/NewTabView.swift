@@ -25,16 +25,35 @@ public final class NewTabView: NSView, NSTextFieldDelegate {
         setupViews()
     }
 
+    public override var wantsUpdateLayer: Bool {
+        return true
+    }
+
+    public override func updateLayer() {
+        super.updateLayer()
+        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+        searchCard.fillColor = .controlBackgroundColor
+        searchCard.borderColor = .separatorColor
+        returnBadge.fillColor = .quaternaryLabelColor
+        returnBadge.borderColor = .separatorColor
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+        needsDisplay = true
+    }
+
     private func setupViews() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor.white.cgColor
+        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
 
-        // Centered clean white search card
+        // Centered clean search card
         searchCard.boxType = .custom
         searchCard.borderWidth = 1.0
-        searchCard.borderColor = NSColor(white: 0.88, alpha: 1.0)
+        searchCard.borderColor = .separatorColor
         searchCard.cornerRadius = 10.0
-        searchCard.fillColor = NSColor.white
+        searchCard.fillColor = .controlBackgroundColor
         searchCard.translatesAutoresizingMaskIntoConstraints = false
         addSubview(searchCard)
 
@@ -42,21 +61,21 @@ public final class NewTabView: NSView, NSTextFieldDelegate {
         let searchSymbol = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         searchIcon.image = searchSymbol?.withSymbolConfiguration(config)
-        searchIcon.contentTintColor = NSColor(white: 0.5, alpha: 1.0)
+        searchIcon.contentTintColor = .secondaryLabelColor
         searchIcon.translatesAutoresizingMaskIntoConstraints = false
         searchCard.addSubview(searchIcon)
 
         // Return key badge
         returnBadge.boxType = .custom
         returnBadge.borderWidth = 1.0
-        returnBadge.borderColor = NSColor(white: 0.9, alpha: 1.0)
+        returnBadge.borderColor = .separatorColor
         returnBadge.cornerRadius = 5.0
-        returnBadge.fillColor = NSColor(white: 0.97, alpha: 1.0)
+        returnBadge.fillColor = .quaternaryLabelColor
         returnBadge.translatesAutoresizingMaskIntoConstraints = false
         searchCard.addSubview(returnBadge)
 
         returnLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        returnLabel.textColor = NSColor(white: 0.5, alpha: 1.0)
+        returnLabel.textColor = .secondaryLabelColor
         returnLabel.translatesAutoresizingMaskIntoConstraints = false
         returnBadge.addSubview(returnLabel)
 
