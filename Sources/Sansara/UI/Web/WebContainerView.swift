@@ -106,6 +106,7 @@ public final class WebContainerView: NSView {
 
         // Attach WKWebView
         let webView = tab.webView
+        webView.underPageBackgroundColor = ContentColors.dynamicBackground
         if webView.superview != self {
             webView.translatesAutoresizingMaskIntoConstraints = false
             addSubview(webView, positioned: .below, relativeTo: errorContainer)

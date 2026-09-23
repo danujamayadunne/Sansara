@@ -2,14 +2,14 @@ import AppKit
 
 private final class BorderSplitView: NSSplitView {
     override var dividerColor: NSColor {
-        return NSColor(white: 0.92, alpha: 1.0)
+        return NSColor.separatorColor
     }
     override var dividerThickness: CGFloat {
         return 1.0
     }
 }
 
-/// Split view controller hosting the pure-white sidebar and browser content,
+/// Split view controller hosting the sidebar (white in light mode, matte black in dark mode) and browser content,
 /// separated by a crisp 1px vertical border.
 public final class BrowserSplitViewController: NSSplitViewController, TabManagerDelegate {
 
@@ -120,5 +120,10 @@ public final class BrowserSplitViewController: NSSplitViewController, TabManager
         }
         sidebarVC.reloadData()
         sidebarVC.updateNavButtons()
+    }
+
+    public func tabManagerDidUpdateGroups(_ manager: TabManager) {
+        sidebarVC.reloadData()
+        contentVC.reloadTabStripe()
     }
 }
