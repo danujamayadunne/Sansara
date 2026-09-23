@@ -6,13 +6,37 @@ public protocol BrowserTabDelegate: AnyObject {
     func browserTab(_ tab: BrowserTab, requestOpenNewTabWith request: URLRequest)
 }
 
-/// Represents an individual browser tab with browsing state and associated WKWebView.
+/// Represents an individual browser tab with browsing state, memory suspension lifecycle,
+/// WebContent crash recovery, and associated WKWebView.
 public final class BrowserTab: NSObject {
 
     public let id: UUID
     public weak var delegate: BrowserTabDelegate?
 
-    public private(set) var title: String = "New Tab"
+    public var customTitle: String? {
+        didSet {
+            updateHandoff()
+            delegate?.browserTabDidUpdate(self)
+        }
+    }
+    public private(set) var webTitle: String = "New Tab"
+
+    public var title: String {
+        get {
+            return customTitle ?? webTitle
+        }
+        set {
+            webTitle = newValue
+        }
+    }
+
+    public func rename(to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        customTitle = trimmed.isEmpty ? nil : trimmed
+        updateHandoff()
+        delegate?.browserTabDidUpdate(self)
+    }
+
     public private(set) var url: URL?
     public private(set) var favicon: NSImage = FaviconService.defaultIcon
     public private(set) var isLoading: Bool = false
@@ -20,6 +44,13 @@ public final class BrowserTab: NSObject {
     public private(set) var canGoBack: Bool = false
     public private(set) var canGoForward: Bool = false
     public private(set) var errorMessage: String?
+    public var groupId: UUID?
+
+    /// Tab Nap: Indicates whether this tab has been suspended to conserve Apple Silicon RAM
+    public private(set) var isSuspended: Bool = false
+
+    /// Apple Continuity / Handoff activity
+    private var handoffActivity: NSUserActivity?
 
     /// Whether this tab is currently showing the minimal new tab page
     public var isNewTabPage: Bool {
@@ -34,6 +65,7 @@ public final class BrowserTab: NSObject {
         }
         let created = createWebView()
         _webView = created
+        isSuspended = false
         return created
     }
 
@@ -50,9 +82,10 @@ public final class BrowserTab: NSObject {
     private var backObservation: NSKeyValueObservation?
     private var forwardObservation: NSKeyValueObservation?
 
-    public init(id: UUID = UUID(), initialURL: URL? = nil) {
+    public init(id: UUID = UUID(), initialURL: URL? = nil, groupId: UUID? = nil) {
         self.id = id
         self.url = initialURL
+        self.groupId = groupId
         super.init()
 
         if let initialURL = initialURL {
@@ -67,6 +100,8 @@ public final class BrowserTab: NSObject {
 
     public func cleanup() {
         stopObservers()
+        handoffActivity?.invalidate()
+        handoffActivity = nil
         _webView?.stopLoading()
         _webView?.navigationDelegate = nil
         _webView?.uiDelegate = nil
@@ -74,10 +109,35 @@ public final class BrowserTab: NSObject {
         _webView = nil
     }
 
+    /// Tab Nap: Frees the WebKit WebContent process and GPU memory while preserving tab metadata
+    public func suspend() {
+        guard _webView != nil else { return }
+        stopObservers()
+        _webView?.stopLoading()
+        _webView?.navigationDelegate = nil
+        _webView?.uiDelegate = nil
+        _webView?.removeFromSuperview()
+        _webView = nil
+        isSuspended = true
+        delegate?.browserTabDidUpdate(self)
+    }
+
+    /// Wakes a suspended tab and reloads its content
+    public func wakeIfNeeded() {
+        guard isSuspended else { return }
+        isSuspended = false
+        if let currentURL = url {
+            load(url: currentURL)
+        }
+    }
+
     private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsAirPlayForMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = .all
+
+        // Attach native declarative privacy shield
+        ContentBlockerService.shared.applyShield(to: config)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
@@ -95,11 +155,15 @@ public final class BrowserTab: NSObject {
             let newTitle = view.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let newTitle = newTitle, !newTitle.isEmpty {
                 self.title = newTitle
+                if let url = self.url {
+                    HistoryManager.shared.updateTitle(for: url, title: newTitle)
+                }
             } else if let host = self.url?.host {
                 self.title = host
             } else {
                 self.title = "New Tab"
             }
+            self.updateHandoff()
             self.delegate?.browserTabDidUpdate(self)
         }
 
@@ -113,6 +177,7 @@ public final class BrowserTab: NSObject {
                     self.delegate?.browserTabDidUpdate(self)
                 }
             }
+            self.updateHandoff()
             self.delegate?.browserTabDidUpdate(self)
         }
 
@@ -156,11 +221,30 @@ public final class BrowserTab: NSObject {
         forwardObservation = nil
     }
 
+    // MARK: - Apple Continuity / Handoff
+
+    private func updateHandoff() {
+        guard let url = self.url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            handoffActivity?.invalidate()
+            handoffActivity = nil
+            return
+        }
+
+        if handoffActivity == nil {
+            handoffActivity = NSUserActivity(activityType: "com.apple.Safari.browsing")
+        }
+        handoffActivity?.title = title
+        handoffActivity?.webpageURL = url
+        handoffActivity?.becomeCurrent()
+    }
+
     // MARK: - Navigation Actions
 
     public func load(url: URL) {
         self.url = url
         self.errorMessage = nil
+        self.isSuspended = false
+
         if title == "New Tab" {
             title = url.host ?? "Loading…"
         }
@@ -171,6 +255,7 @@ public final class BrowserTab: NSObject {
         }
         let request = URLRequest(url: url)
         webView.load(request)
+        updateHandoff()
         delegate?.browserTabDidUpdate(self)
     }
 
@@ -187,6 +272,7 @@ public final class BrowserTab: NSObject {
     }
 
     public func reload() {
+        isSuspended = false
         if errorMessage != nil, let url = url {
             load(url: url)
         } else {
@@ -195,7 +281,50 @@ public final class BrowserTab: NSObject {
     }
 
     public func stopLoading() {
-        webView.stopLoading()
+        _webView?.stopLoading()
+    }
+
+    // MARK: - DOM Favicon Resolution
+
+    private func extractDOMFavicon() {
+        guard let webView = _webView, let url = webView.url, let host = url.host else { return }
+
+        let js = """
+        (function() {
+            var links = document.getElementsByTagName('link');
+            for (var i = 0; i < links.length; i++) {
+                var rel = links[i].getAttribute('rel');
+                if (rel && (rel.includes('apple-touch-icon') || rel.includes('icon'))) {
+                    return links[i].href;
+                }
+            }
+            return null;
+        })()
+        """
+
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self = self,
+                  let iconHref = result as? String,
+                  let iconURL = URL(string: iconHref) else { return }
+
+            var req = URLRequest(url: iconURL)
+            req.cachePolicy = .returnCacheDataElseLoad
+            req.timeoutInterval = 3.0
+
+            URLSession.shared.dataTask(with: req) { [weak self] data, response, _ in
+                guard let self = self,
+                      let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200,
+                      let data = data,
+                      let img = NSImage(data: data) else { return }
+
+                FaviconService.shared.cacheFavicon(img, for: host)
+                DispatchQueue.main.async {
+                    self.favicon = img
+                    self.delegate?.browserTabDidUpdate(self)
+                }
+            }.resume()
+        }
     }
 }
 
@@ -209,12 +338,9 @@ extension BrowserTab: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         errorMessage = nil
-        if webView.url?.host != nil {
-            FaviconService.shared.getFavicon(for: webView.url) { [weak self] image in
-                guard let self = self else { return }
-                self.favicon = image
-                self.delegate?.browserTabDidUpdate(self)
-            }
+        extractDOMFavicon()
+        if let url = webView.url {
+            HistoryManager.shared.addVisit(url: url, title: self.title)
         }
         delegate?.browserTabDidUpdate(self)
     }
@@ -236,6 +362,24 @@ extension BrowserTab: WKNavigationDelegate {
         }
         errorMessage = error.localizedDescription
         delegate?.browserTabDidUpdate(self)
+    }
+
+    // MARK: - Process Termination Crash Recovery (Jetsam & WebContent crash protection)
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // Automatically recover when macOS memory pressure or a WebContent crash terminates the process
+        stopObservers()
+        _webView?.stopLoading()
+        _webView?.navigationDelegate = nil
+        _webView?.uiDelegate = nil
+        _webView?.removeFromSuperview()
+        _webView = nil
+
+        // If tab has an active URL, reload it silently to restore the page
+        if let currentURL = self.url {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.load(url: currentURL)
+            }
+        }
     }
 }
 
