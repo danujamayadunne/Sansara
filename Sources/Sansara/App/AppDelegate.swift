@@ -1,11 +1,17 @@
 import AppKit
 
-public final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     public private(set) var windowController: BrowserWindowController?
 
+    private var historyMenu: NSMenu?
+    private var bookmarksMenu: NSMenu?
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
+
+        // Apply appearance mode from settings
+        SettingsManager.shared.applyAppearance()
 
         let controller = BrowserWindowController()
         self.windowController = controller
@@ -27,6 +33,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "About Sansara", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(NSMenuItem.separator())
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
+        appMenu.addItem(settingsItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Hide Sansara", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
         let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -51,7 +60,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
-        // 3. Edit Menu (Standard native text editing support)
+        // 3. Edit Menu
         let editMenuItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(NSMenuItem(title: "Undo", action: #selector(UndoManager.undo), keyEquivalent: "z"))
@@ -76,7 +85,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
-        // 5. History / Navigation Menu
+        // 5. History Menu
+        let historyMenuItem = NSMenuItem()
+        let histMenu = NSMenu(title: "History")
+        histMenu.delegate = self
+        self.historyMenu = histMenu
+        historyMenuItem.submenu = histMenu
+        mainMenu.addItem(historyMenuItem)
+
+        // 6. Bookmarks Menu
+        let bookmarksMenuItem = NSMenuItem()
+        let bmarkMenu = NSMenu(title: "Bookmarks")
+        bmarkMenu.delegate = self
+        self.bookmarksMenu = bmarkMenu
+        bookmarksMenuItem.submenu = bmarkMenu
+        mainMenu.addItem(bookmarksMenuItem)
+
+        // 7. Navigation Menu
         let navMenuItem = NSMenuItem()
         let navMenu = NSMenu(title: "Navigation")
         navMenu.addItem(NSMenuItem(title: "Back", action: #selector(menuBack), keyEquivalent: "["))
@@ -84,7 +109,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         navMenuItem.submenu = navMenu
         mainMenu.addItem(navMenuItem)
 
-        // 6. Window Menu
+        // 8. Window Menu
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
@@ -109,7 +134,106 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.windowsMenu = windowMenu
     }
 
+    // MARK: - NSMenuDelegate (Dynamic History & Bookmarks Menus)
+
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu == historyMenu {
+            updateHistoryMenu(menu)
+        } else if menu == bookmarksMenu {
+            updateBookmarksMenu(menu)
+        }
+    }
+
+    private func updateHistoryMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let showHistoryItem = NSMenuItem(title: "Show All History", action: #selector(menuShowHistory), keyEquivalent: "y")
+        menu.addItem(showHistoryItem)
+
+        let clearItem = NSMenuItem(title: "Clear History…", action: #selector(menuClearHistory), keyEquivalent: "")
+        menu.addItem(clearItem)
+
+        let reopenItem = NSMenuItem(title: "Reopen Closed Tab", action: #selector(menuReopenClosedTab), keyEquivalent: "t")
+        reopenItem.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(reopenItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let recent = HistoryManager.shared.recentHistory(limit: 12)
+        if recent.isEmpty {
+            let emptyItem = NSMenuItem(title: "No History", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        } else {
+            for item in recent {
+                let title = item.title.isEmpty ? item.url.absoluteString : item.title
+                let truncatedTitle = title.count > 45 ? String(title.prefix(42)) + "…" : title
+                let menuItem = NSMenuItem(title: truncatedTitle, action: #selector(menuOpenHistoryItem(_:)), keyEquivalent: "")
+                menuItem.representedObject = item.url
+                menu.addItem(menuItem)
+            }
+        }
+    }
+
+    private func updateBookmarksMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let addBookmarkItem = NSMenuItem(title: "Bookmark This Tab", action: #selector(menuAddBookmark), keyEquivalent: "d")
+        menu.addItem(addBookmarkItem)
+
+        let showBookmarksItem = NSMenuItem(title: "Show Bookmarks", action: #selector(menuShowBookmarks), keyEquivalent: "b")
+        showBookmarksItem.keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(showBookmarksItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let bookmarks = BookmarkManager.shared.allBookmarks()
+        if bookmarks.isEmpty {
+            let emptyItem = NSMenuItem(title: "No Bookmarks", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        } else {
+            for item in bookmarks.prefix(20) {
+                let title = item.title.isEmpty ? item.url.absoluteString : item.title
+                let truncatedTitle = title.count > 45 ? String(title.prefix(42)) + "…" : title
+                let menuItem = NSMenuItem(title: truncatedTitle, action: #selector(menuOpenBookmarkItem(_:)), keyEquivalent: "")
+                menuItem.representedObject = item.url
+                menu.addItem(menuItem)
+            }
+        }
+    }
+
     // MARK: - Menu Actions
+
+    @objc private func menuOpenSettings() {
+        windowController?.showSettings()
+    }
+
+    @objc private func menuShowHistory() {
+        windowController?.showHistory()
+    }
+
+    @objc private func menuClearHistory() {
+        windowController?.clearHistory()
+    }
+
+    @objc private func menuAddBookmark() {
+        windowController?.toggleBookmarkForCurrentTab()
+    }
+
+    @objc private func menuShowBookmarks() {
+        windowController?.showBookmarks()
+    }
+
+    @objc private func menuOpenHistoryItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        windowController?.openURL(url, inNewTab: false)
+    }
+
+    @objc private func menuOpenBookmarkItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        windowController?.openURL(url, inNewTab: false)
+    }
 
     @objc private func menuNewTab() {
         windowController?.newTab()
