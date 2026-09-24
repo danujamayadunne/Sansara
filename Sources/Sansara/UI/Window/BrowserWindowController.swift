@@ -155,6 +155,7 @@ public final class BrowserWindowController: NSWindowController, NSWindowDelegate
 
         if alert.runModal() == .alertFirstButtonReturn {
             HistoryManager.shared.clearAll()
+            FaviconService.shared.clearCache()
         }
     }
 }

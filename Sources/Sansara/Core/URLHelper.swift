@@ -4,14 +4,11 @@ import Foundation
 /// and converting it to a valid destination URL.
 public enum URLHelper {
 
-    /// Google search base URL
-    private static let searchEndpoint = "https://www.google.com/search?q="
-
     /// Resolves raw text into a valid target URL (direct URL or search query)
     public static func resolve(input: String) -> URL {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return URL(string: "https://www.google.com")!
+            return SettingsManager.shared.searchEngine.homeURL
         }
 
         // 1. Direct scheme: http:// or https:// or file://

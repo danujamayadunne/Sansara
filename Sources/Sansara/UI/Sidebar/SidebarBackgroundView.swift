@@ -69,12 +69,22 @@ public final class SidebarBackgroundView: NSView {
         updateBackgroundColor()
     }
 
+    public override var appearance: NSAppearance? {
+        didSet {
+            super.appearance = appearance
+            updateBackgroundColor()
+            needsDisplay = true
+        }
+    }
+
     public override func draw(_ dirtyRect: NSRect) {
-        SidebarColors.color(for: effectiveAppearance).setFill()
+        let currentApp = appearance ?? effectiveAppearance
+        SidebarColors.color(for: currentApp).setFill()
         dirtyRect.fill()
     }
 
     private func updateBackgroundColor() {
-        layer?.backgroundColor = SidebarColors.color(for: effectiveAppearance).cgColor
+        let currentApp = appearance ?? effectiveAppearance
+        layer?.backgroundColor = SidebarColors.color(for: currentApp).cgColor
     }
 }

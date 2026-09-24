@@ -190,7 +190,7 @@ struct SansaraTests {
         print("✓ TabManager tests passed")
 
         // MARK: - Test FaviconService
-        print("Testing FaviconService...")
+        print("Testing FaviconService Privacy & Security...")
         let defaultIcon = FaviconService.defaultIcon
         assertTrue(defaultIcon.size.width > 0, "Default favicon symbol should have valid size")
 
@@ -198,7 +198,58 @@ struct SansaraTests {
         assertTrue(monogram.size.width == 16 && monogram.size.height == 16, "Monogram icon should be 16x16")
 
         FaviconService.shared.cacheFavicon(monogram, for: "apple.com")
+
+        // Test SSRF / loopback / private IP filtering
+        assertTrue(!FaviconService.isSafeHost("localhost"), "localhost should be blocked from favicon fetching")
+        assertTrue(!FaviconService.isSafeHost("127.0.0.1"), "127.0.0.1 should be blocked")
+        assertTrue(!FaviconService.isSafeHost("::1"), "::1 loopback should be blocked")
+        assertTrue(!FaviconService.isSafeHost("0.0.0.0"), "0.0.0.0 should be blocked")
+        assertTrue(!FaviconService.isSafeHost("169.254.169.254"), "AWS/cloud metadata should be blocked")
+        assertTrue(!FaviconService.isSafeHost("10.0.1.5"), "RFC 1918 10.x.x.x should be blocked")
+        assertTrue(!FaviconService.isSafeHost("192.168.1.1"), "RFC 1918 192.168.x.x should be blocked")
+        assertTrue(!FaviconService.isSafeHost("172.16.0.1"), "RFC 1918 172.16.x.x should be blocked")
+        assertTrue(!FaviconService.isSafeHost("172.31.255.255"), "RFC 1918 172.31.x.x should be blocked")
+        assertTrue(!FaviconService.isSafeHost("fe80::1"), "IPv6 link-local should be blocked")
+        assertTrue(!FaviconService.isSafeHost("fc00::1"), "IPv6 unique local should be blocked")
+
+        // Test Tracker Host blocking
+        assertTrue(!FaviconService.isSafeHost("google-analytics.com"), "Google Analytics should be blocked from favicon fetching")
+        assertTrue(!FaviconService.isSafeHost("googletagmanager.com"), "Google Tag Manager should be blocked")
+        assertTrue(!FaviconService.isSafeHost("doubleclick.net"), "DoubleClick should be blocked")
+        assertTrue(!FaviconService.isSafeHost("pixel.facebook.com"), "Facebook Pixel should be blocked")
+        assertTrue(!FaviconService.isSafeHost("ads-twitter.com"), "Twitter Ads should be blocked")
+
+        // Safe hosts should be allowed
+        assertTrue(FaviconService.isSafeHost("apple.com"), "Public host apple.com should be safe")
+        assertTrue(FaviconService.isSafeHost("github.com"), "Public host github.com should be safe")
+        assertTrue(FaviconService.isSafeHost("wikipedia.org"), "Public host wikipedia.org should be safe")
+
+        // Test data URI in-memory resolution (zero-network, zero-leak)
+        let samplePNGDataURI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        var decodedImage: NSImage?
+        let exp = DispatchSemaphore(value: 0)
+        FaviconService.shared.resolveDOMFavicon(href: samplePNGDataURI, documentURL: URL(string: "https://example.com")) { img in
+            decodedImage = img
+            exp.signal()
+        }
+        _ = exp.wait(timeout: .now() + 1.0)
+        assertTrue(decodedImage != nil, "Data URI favicon should decode directly in memory")
+
+        // Test clearCache
+        FaviconService.shared.clearCache()
         print("✓ FaviconService tests passed")
+
+        // MARK: - Test ContentBlockerService
+        print("Testing ContentBlockerService...")
+        assertTrue(ContentBlockerService.isTracker(host: "google-analytics.com"), "google-analytics.com should be recognized as tracker")
+        assertTrue(ContentBlockerService.isTracker(host: "analytics.google.com"), "subdomain of google tracker should be recognized")
+        assertTrue(ContentBlockerService.isTracker(host: "googletagmanager.com"), "googletagmanager.com should be recognized as tracker")
+        assertTrue(ContentBlockerService.isTracker(host: "doubleclick.net"), "doubleclick.net should be recognized as tracker")
+        assertTrue(ContentBlockerService.isTracker(host: "connect.facebook.net"), "connect.facebook.net should be recognized as tracker")
+        assertTrue(!ContentBlockerService.isTracker(host: "apple.com"), "apple.com is not a tracker")
+        assertTrue(!ContentBlockerService.isTracker(host: "github.com"), "github.com is not a tracker")
+        assertTrue(!ContentBlockerService.isTracker(host: "duckduckgo.com"), "duckduckgo.com is not a tracker")
+        print("✓ ContentBlockerService tests passed")
 
         // MARK: - Test BrowserTab Tab Nap & Memory Suspension
         print("Testing BrowserTab Tab Nap (Suspension & Wake)...")
@@ -447,12 +498,13 @@ struct SansaraTests {
 
         // MARK: - Test SettingsManager
         print("Testing SettingsManager...")
-        let testDefaults = UserDefaults(suiteName: "com.sansara.tests.settings")!
-        testDefaults.removePersistentDomain(forName: "com.sansara.tests.settings")
+        let suite = "com.sansara.tests.settings.\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suite)!
+        testDefaults.removePersistentDomain(forName: suite)
         let settings = SettingsManager(defaults: testDefaults)
         assertEqual(settings.searchEngine, .google, "Default search engine should be Google")
         assertEqual(settings.appearanceMode, .system, "Default appearance should be System")
-        assertEqual(settings.newTabPageMode, .minimal, "Default new tab mode should be Minimal")
+        assertEqual(settings.newTabPageMode, .image, "Default new tab mode should be Image")
         assertEqual(settings.isContentBlockerEnabled, true, "Default content blocker should be enabled")
         assertEqual(settings.tabNapEnabled, true, "Default tab nap should be enabled")
         assertEqual(settings.tabNapThreshold, 15, "Default tab nap threshold should be 15")
@@ -469,13 +521,31 @@ struct SansaraTests {
         settings.appearanceMode = .dark
         assertEqual(settings.appearanceMode, .dark, "Appearance mode should update to Dark")
 
-        // URLHelper with dynamic search engine
+        // Change New Tab Page Mode
+        settings.newTabPageMode = .blank
+        assertEqual(settings.newTabPageMode, .blank, "New tab page mode should update to Blank")
+        settings.newTabPageMode = .image
+        assertEqual(settings.newTabPageMode, .image, "New tab page mode should update to Image")
+
+        // Test Custom Wallpaper Path
+        assertEqual(settings.customWallpaperPath, nil, "Default custom wallpaper should be nil")
+        settings.customWallpaperPath = "/tmp/test_wallpaper.jpg"
+        assertEqual(settings.customWallpaperPath, "/tmp/test_wallpaper.jpg", "Custom wallpaper path should update")
+        settings.resetToDefaults()
+        assertEqual(settings.customWallpaperPath, nil, "Reset should clear custom wallpaper path")
+
+        // Test SearchEngine homeURL and empty input resolution
+        assertEqual(SearchEngine.google.homeURL.absoluteString, "https://www.google.com", "Google homeURL should match")
+        assertEqual(SearchEngine.duckDuckGo.homeURL.absoluteString, "https://duckduckgo.com", "DuckDuckGo homeURL should match")
+        assertEqual(SearchEngine.brave.homeURL.absoluteString, "https://search.brave.com", "Brave homeURL should match")
+
         SettingsManager.shared.searchEngine = .duckDuckGo
-        let resolvedDDG = URLHelper.resolve(input: "swift programming")
-        assertTrue(resolvedDDG.absoluteString.hasPrefix("https://duckduckgo.com/?q="), "URLHelper should use configured search engine")
+        let emptyResolvedDDG = URLHelper.resolve(input: "   ")
+        assertEqual(emptyResolvedDDG.absoluteString, "https://duckduckgo.com", "Empty query should resolve to configured searchEngine homeURL")
+
         SettingsManager.shared.resetToDefaults()
-        let resolvedGoogle = URLHelper.resolve(input: "swift programming")
-        assertTrue(resolvedGoogle.absoluteString.hasPrefix("https://www.google.com/search?q="), "URLHelper should revert back to Google after reset")
+        let emptyResolvedDefault = URLHelper.resolve(input: "")
+        assertEqual(emptyResolvedDefault.absoluteString, "https://www.google.com", "Empty query with default settings should resolve to Google")
 
         print("✓ SettingsManager tests passed")
 
@@ -564,6 +634,158 @@ struct SansaraTests {
         try? FileManager.default.removeItem(at: tempBookmarksURL)
 
         print("✓ BookmarkManager tests passed")
+
+        // MARK: - Test SearchSuggestionsProvider & Verified Domains
+        print("Testing SearchSuggestionsProvider...")
+        let searchHistoryURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("sansara_test_history_search_\(UUID().uuidString).json")
+        let searchHistoryMgr = HistoryManager(fileURL: searchHistoryURL)
+        searchHistoryMgr.clearAll()
+
+        let provider = SearchSuggestionsProvider(historyManager: searchHistoryMgr)
+
+        // 1. When history is empty ("if not search"): empty query should return top verified domains!
+        let emptyHistorySuggestions = provider.suggestions(for: "")
+        assertEqual(emptyHistorySuggestions.count, 5, "When no search history exists, should return 5 verified domains")
+        assertTrue(emptyHistorySuggestions.allSatisfy { $0.kind == .verifiedDomain }, "All items should be verified domains")
+        let verifiedDomainsInEmpty = emptyHistorySuggestions.map { $0.displayURL }
+        assertTrue(verifiedDomainsInEmpty.contains("x.com"), "Verified domains should contain x.com")
+        assertTrue(verifiedDomainsInEmpty.contains("youtube.com"), "Verified domains should contain youtube.com")
+
+        // 2. Query not in history ("if not search"): should return according verified domains
+        let twitchResults = provider.suggestions(for: "twitch")
+        assertEqual(twitchResults.count, 1, "Twitch query should return according verified domain")
+        assertEqual(twitchResults[0].displayURL, "twitch.tv", "Verified domain should be twitch.tv")
+        assertEqual(twitchResults[0].kind, .verifiedDomain, "Kind should be verifiedDomain")
+
+        let xResults = provider.suggestions(for: "x")
+        assertTrue(xResults.contains(where: { $0.displayURL == "x.com" && $0.kind == .verifiedDomain }), "x query should match x.com verified domain")
+
+        let redditResults = provider.suggestions(for: "red")
+        assertTrue(redditResults.contains(where: { $0.displayURL == "reddit.com" }), "red query should match reddit.com")
+
+        let instaResults = provider.suggestions(for: "insta")
+        assertTrue(instaResults.contains(where: { $0.displayURL == "instagram.com" }), "insta query should match instagram.com")
+
+        let fbResults = provider.suggestions(for: "face")
+        assertTrue(fbResults.contains(where: { $0.displayURL == "facebook.com" }), "face query should match facebook.com")
+
+        // 3. Populate history visits
+        searchHistoryMgr.addVisit(url: URL(string: "https://www.apple.com/")!, title: "Apple")
+        searchHistoryMgr.addVisit(url: URL(string: "https://news.ycombinator.com")!, title: "Hacker News")
+        searchHistoryMgr.addVisit(url: URL(string: "https://github.com/apple/swift")!, title: "apple/swift: The Swift Programming Language")
+        searchHistoryMgr.addVisit(url: URL(string: "https://github.com/")!, title: "GitHub: Let's build from here")
+        searchHistoryMgr.addVisit(url: URL(string: "https://duckduckgo.com/?q=apple")!, title: "apple at DuckDuckGo")
+        searchHistoryMgr.addVisit(url: URL(string: "https://github.com/")!, title: "GitHub - Earlier Visit") // duplicate URL
+
+        // 4. When history is populated, empty query should return top 5 recent history searches
+        let populatedRecent = provider.suggestions(for: "")
+        assertEqual(populatedRecent.count, 5, "Should return top 5 recent searches")
+        assertTrue(populatedRecent.allSatisfy { $0.kind == .history }, "Recent visits should be history kind")
+
+        // 5. Deduplication and matching: "git" should return GitHub verified domain / history items
+        let gitSuggestions = provider.suggestions(for: "git")
+        assertTrue(gitSuggestions.count <= 5, "Results count should be <= 5")
+        assertTrue(gitSuggestions.contains(where: { $0.displayURL.contains("github.com") }), "Results should contain github.com")
+
+        // 6. Host prefix ranking: typing "apple" should rank apple.com
+        let appleSuggestions = provider.suggestions(for: "apple")
+        assertTrue(appleSuggestions.count <= 5, "Results count should be <= 5")
+        assertTrue(appleSuggestions[0].displayURL.contains("apple.com"), "Top result should be apple.com")
+
+        // 7. Multi-token query: "apple swift"
+        let multiTokenSuggestions = provider.suggestions(for: "apple swift")
+        assertEqual(multiTokenSuggestions.count, 1, "Should match item containing both apple and swift")
+        assertEqual(multiTokenSuggestions[0].url.path, "/apple/swift", "Matched path should be /apple/swift")
+
+        // 8. maxCount constraint
+        let limitedSuggestions = provider.suggestions(for: "apple", maxCount: 2)
+        assertEqual(limitedSuggestions.count, 2, "maxCount of 2 should return exactly 2 items")
+
+        // 9. Display string formatting
+        assertEqual(SearchSuggestionsProvider.displayString(for: URL(string: "https://apple.com/")!), "apple.com", "https and trailing slash stripped")
+        assertEqual(SearchSuggestionsProvider.displayString(for: URL(string: "http://example.org/path")!), "example.org/path", "http stripped")
+
+        try? FileManager.default.removeItem(at: searchHistoryURL)
+        print("✓ SearchSuggestionsProvider tests passed")
+
+        // MARK: - Test SearchHistoryDropdownView
+        print("Testing SearchHistoryDropdownView...")
+        let dropdown = SearchHistoryDropdownView()
+        assertTrue(dropdown.isHidden, "Dropdown should be hidden initially")
+        assertEqual(dropdown.items.count, 0, "Initial items count should be 0")
+        assertEqual(dropdown.selectedItem, nil, "No item selected initially")
+
+        let sampleItems = [
+            SearchSuggestion(title: "GitHub", url: URL(string: "https://github.com")!, kind: .verifiedDomain),
+            SearchSuggestion(title: "Apple", url: URL(string: "https://apple.com")!, kind: .verifiedDomain),
+            SearchSuggestion(title: "Hacker News", url: URL(string: "https://news.ycombinator.com")!, kind: .history)
+        ]
+
+        dropdown.update(items: sampleItems)
+        assertEqual(dropdown.isHidden, false, "Dropdown should be visible after update with items")
+        assertEqual(dropdown.items.count, 3, "Dropdown should have 3 items")
+        assertEqual(dropdown.selectedIndex, nil, "Selected index should be nil before navigation")
+
+        // Keyboard arrow down navigation
+        dropdown.selectNext()
+        assertEqual(dropdown.selectedIndex, 0, "selectNext should select index 0")
+        assertEqual(dropdown.selectedItem?.title, "GitHub", "Selected item should be GitHub")
+
+        dropdown.selectNext()
+        assertEqual(dropdown.selectedIndex, 1, "selectNext should select index 1")
+        assertEqual(dropdown.selectedItem?.title, "Apple", "Selected item should be Apple")
+
+        dropdown.selectNext()
+        assertEqual(dropdown.selectedIndex, 2, "selectNext should select index 2")
+        assertEqual(dropdown.selectedItem?.title, "Hacker News", "Selected item should be Hacker News")
+
+        // Reaching end should stay at last index
+        dropdown.selectNext()
+        assertEqual(dropdown.selectedIndex, 2, "selectNext at end should clamp to last index")
+
+        // Keyboard arrow up navigation
+        dropdown.selectPrevious()
+        assertEqual(dropdown.selectedIndex, 1, "selectPrevious should move back to index 1")
+
+        dropdown.selectPrevious()
+        assertEqual(dropdown.selectedIndex, 0, "selectPrevious should move back to index 0")
+
+        dropdown.selectPrevious()
+        assertEqual(dropdown.selectedIndex, nil, "selectPrevious from 0 should reset to nil (unselected)")
+        assertEqual(dropdown.selectedItem, nil, "selectedItem should be nil")
+
+        // Hide dropdown
+        dropdown.hide()
+        assertTrue(dropdown.isHidden, "Dropdown should be hidden after hide()")
+        assertEqual(dropdown.items.count, 0, "Items should be cleared after hide()")
+
+        // MARK: - Test SettingsWindowController & Sidebar Categorization
+        print("Testing SettingsWindowController & Sidebar Categorization...")
+        assertEqual(SettingsCategory.allCases.count, 3, "Settings should have 3 categories: General, Appearance, Privacy")
+        assertEqual(SettingsCategory.general.rawValue, "General", "General category raw value should match")
+        assertEqual(SettingsCategory.appearance.rawValue, "Appearance", "Appearance category raw value should match")
+        assertEqual(SettingsCategory.privacy.rawValue, "Privacy", "Privacy category raw value should match")
+
+        let settingsWC = SettingsWindowController()
+        assertEqual(settingsWC.currentCategory, .general, "Initial category should be General")
+        assertEqual(settingsWC.window?.title, "General", "Window title should initially match General")
+        assertTrue((settingsWC.window?.frame.width ?? 0) >= 600, "Window frame width should accommodate sidebar design")
+
+        // Switch to Appearance
+        settingsWC.selectCategory(.appearance)
+        assertEqual(settingsWC.currentCategory, .appearance, "Active category should switch to Appearance")
+        assertEqual(settingsWC.window?.title, "Appearance", "Window title should update to Appearance")
+
+        // Switch to Privacy
+        settingsWC.selectCategory(.privacy)
+        assertEqual(settingsWC.currentCategory, .privacy, "Active category should switch to Privacy")
+        assertEqual(settingsWC.window?.title, "Privacy", "Window title should update to Privacy")
+
+        // Switch back to General
+        settingsWC.selectCategory(.general)
+        assertEqual(settingsWC.currentCategory, .general, "Active category should switch back to General")
+        assertEqual(settingsWC.window?.title, "General", "Window title should update to General")
+        print("✓ SettingsWindowController & Sidebar Categorization tests passed")
 
         print("All Sansara Unit Tests Passed Successfully! 🎉")
     }

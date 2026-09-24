@@ -23,10 +23,25 @@ public enum SearchEngine: String, CaseIterable, Codable {
         }
     }
 
+    public var homeURL: URL {
+        switch self {
+        case .google:
+            return URL(string: "https://www.google.com")!
+        case .duckDuckGo:
+            return URL(string: "https://duckduckgo.com")!
+        case .bing:
+            return URL(string: "https://www.bing.com")!
+        case .brave:
+            return URL(string: "https://search.brave.com")!
+        case .ecosia:
+            return URL(string: "https://www.ecosia.org")!
+        }
+    }
+
     public func searchURL(for query: String) -> URL {
         let queryAllowed = CharacterSet.urlQueryAllowed
         let encoded = query.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? query
-        return URL(string: searchEndpoint + encoded) ?? URL(string: "https://www.google.com")!
+        return URL(string: searchEndpoint + encoded) ?? homeURL
     }
 }
 
@@ -48,8 +63,8 @@ public enum AppearanceMode: String, CaseIterable, Codable {
 }
 
 public enum NewTabPageMode: String, CaseIterable, Codable {
-    case minimal = "Minimal Search"
-    case blank = "Blank Page"
+    case blank = "Blank"
+    case image = "Image"
 }
 
 public final class SettingsManager: NSObject {
@@ -67,6 +82,7 @@ public final class SettingsManager: NSObject {
         static let isContentBlockerEnabled = "sansara.settings.isContentBlockerEnabled"
         static let tabNapEnabled = "sansara.settings.tabNapEnabled"
         static let tabNapThreshold = "sansara.settings.tabNapThreshold"
+        static let customWallpaperPath = "sansara.settings.customWallpaperPath"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -105,11 +121,19 @@ public final class SettingsManager: NSObject {
 
     public var newTabPageMode: NewTabPageMode {
         get {
-            guard let raw = defaults.string(forKey: Keys.newTabPageMode),
-                  let mode = NewTabPageMode(rawValue: raw) else {
-                return .minimal
+            guard let raw = defaults.string(forKey: Keys.newTabPageMode) else {
+                return .image
             }
-            return mode
+            if let mode = NewTabPageMode(rawValue: raw) {
+                return mode
+            }
+            if raw == "Minimal Search" || raw == "minimal" {
+                return .image
+            }
+            if raw == "Blank Page" || raw == "blank" {
+                return .blank
+            }
+            return .image
         }
         set {
             defaults.set(newValue.rawValue, forKey: Keys.newTabPageMode)
@@ -154,6 +178,20 @@ public final class SettingsManager: NSObject {
         }
     }
 
+    public var customWallpaperPath: String? {
+        get {
+            return defaults.string(forKey: Keys.customWallpaperPath)
+        }
+        set {
+            if let path = newValue {
+                defaults.set(path, forKey: Keys.customWallpaperPath)
+            } else {
+                defaults.removeObject(forKey: Keys.customWallpaperPath)
+            }
+            notifyChange()
+        }
+    }
+
     public func applyAppearance() {
         NSApp?.appearance = appearanceMode.nsAppearance
     }
@@ -165,9 +203,10 @@ public final class SettingsManager: NSObject {
     public func resetToDefaults() {
         searchEngine = .google
         appearanceMode = .system
-        newTabPageMode = .minimal
+        newTabPageMode = .image
         isContentBlockerEnabled = true
         tabNapEnabled = true
         tabNapThreshold = 15
+        customWallpaperPath = nil
     }
 }

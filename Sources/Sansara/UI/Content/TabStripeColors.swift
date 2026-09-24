@@ -11,20 +11,20 @@ public enum TabStripeColors {
     /// Active tab border in light appearance (#000000 8%)
     public static let lightActiveBorder: NSColor = NSColor(white: 0.0, alpha: 0.08)
 
-    /// Active tab border in dark appearance (#FFFFFF 10%)
-    public static let darkActiveBorder: NSColor = NSColor(white: 1.0, alpha: 0.10)
+    /// Active tab border in dark appearance (#000000 35% or subtle dark)
+    public static let darkActiveBorder: NSColor = NSColor(white: 0.0, alpha: 0.35)
 
-    /// Inactive tab background in light appearance: subtle little gray (#000000 5.5%)
-    public static let lightInactiveBackground: NSColor = NSColor(white: 0.0, alpha: 0.055)
+    /// Inactive tab background in light appearance: subtle little gray (#000000 6.5%)
+    public static let lightInactiveBackground: NSColor = NSColor(white: 0.0, alpha: 0.065)
 
-    /// Inactive tab background in dark appearance: subtle elevated dark gray (#FFFFFF 6%)
-    public static let darkInactiveBackground: NSColor = NSColor(white: 1.0, alpha: 0.06)
+    /// Inactive tab background in dark appearance: subtle elevated dark gray (#FFFFFF 8%)
+    public static let darkInactiveBackground: NSColor = NSColor(white: 1.0, alpha: 0.08)
 
     /// Inactive tab hover background in light appearance (#000000 9%)
     public static let lightHoverBackground: NSColor = NSColor(white: 0.0, alpha: 0.09)
 
-    /// Inactive tab hover background in dark appearance (#FFFFFF 10%)
-    public static let darkHoverBackground: NSColor = NSColor(white: 1.0, alpha: 0.10)
+    /// Inactive tab hover background in dark appearance (#FFFFFF 12%)
+    public static let darkHoverBackground: NSColor = NSColor(white: 1.0, alpha: 0.12)
 
     /// Dynamic NSColor resolving to pure white in light mode and elevated luminous dark in dark mode.
     public static let dynamicActiveBackground = NSColor(name: nil) { appearance in

@@ -4,7 +4,7 @@ import WebKit
 /// Container view that displays the active WKWebView or an error state.
 public final class WebContainerView: NSView {
 
-    private var currentTab: BrowserTab?
+    private weak var currentTab: BrowserTab?
     private weak var currentWebView: WKWebView?
 
     private let errorContainer = NSView()

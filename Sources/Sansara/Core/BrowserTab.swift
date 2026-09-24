@@ -100,6 +100,7 @@ public final class BrowserTab: NSObject {
 
     public func cleanup() {
         stopObservers()
+        NotificationCenter.default.removeObserver(self, name: SettingsManager.didChangeNotification, object: nil)
         handoffActivity?.invalidate()
         handoffActivity = nil
         _webView?.stopLoading()
@@ -113,6 +114,7 @@ public final class BrowserTab: NSObject {
     public func suspend() {
         guard _webView != nil else { return }
         stopObservers()
+        NotificationCenter.default.removeObserver(self, name: SettingsManager.didChangeNotification, object: nil)
         _webView?.stopLoading()
         _webView?.navigationDelegate = nil
         _webView?.uiDelegate = nil
@@ -133,11 +135,17 @@ public final class BrowserTab: NSObject {
 
     private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.allowsAirPlayForMediaPlayback = true
+        // Prevent media/URL broadcast to local network AirPlay receivers
+        config.allowsAirPlayForMediaPlayback = false
         config.mediaTypesRequiringUserActionForPlayback = .all
 
-        // Attach native declarative privacy shield
-        ContentBlockerService.shared.applyShield(to: config)
+        // Enable Apple's native anti-phishing and deceptive website shield
+        config.preferences.isFraudulentWebsiteWarningEnabled = true
+
+        // Attach native declarative privacy shield if enabled
+        if SettingsManager.shared.isContentBlockerEnabled {
+            ContentBlockerService.shared.applyShield(to: config)
+        }
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
@@ -145,8 +153,29 @@ public final class BrowserTab: NSObject {
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = false
+        }
+
         setupObservers(for: webView)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSettingsChanged),
+            name: SettingsManager.didChangeNotification,
+            object: nil
+        )
+
         return webView
+    }
+
+    @objc private func handleSettingsChanged() {
+        guard let wv = _webView else { return }
+        if SettingsManager.shared.isContentBlockerEnabled {
+            ContentBlockerService.shared.applyShield(to: wv.configuration)
+        } else {
+            ContentBlockerService.shared.removeShield(from: wv.configuration)
+        }
     }
 
     private func setupObservers(for webView: WKWebView) {
@@ -224,17 +253,32 @@ public final class BrowserTab: NSObject {
     // MARK: - Apple Continuity / Handoff
 
     private func updateHandoff() {
-        guard let url = self.url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+        guard let url = self.url,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
             handoffActivity?.invalidate()
             handoffActivity = nil
             return
         }
 
+        // Privacy Guard: Do not broadcast URLs with embedded username or password credentials
+        if url.user != nil || url.password != nil {
+            handoffActivity?.invalidate()
+            handoffActivity = nil
+            return
+        }
+
+        // Clean user/password from URL components
+        var sanitizedComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        sanitizedComponents?.user = nil
+        sanitizedComponents?.password = nil
+        let cleanURL = sanitizedComponents?.url ?? url
+
         if handoffActivity == nil {
             handoffActivity = NSUserActivity(activityType: "com.apple.Safari.browsing")
         }
         handoffActivity?.title = title
-        handoffActivity?.webpageURL = url
+        handoffActivity?.webpageURL = cleanURL
         handoffActivity?.becomeCurrent()
     }
 
@@ -287,7 +331,7 @@ public final class BrowserTab: NSObject {
     // MARK: - DOM Favicon Resolution
 
     private func extractDOMFavicon() {
-        guard let webView = _webView, let url = webView.url, let host = url.host else { return }
+        guard let webView = _webView, let url = webView.url else { return }
 
         let js = """
         (function() {
@@ -295,7 +339,7 @@ public final class BrowserTab: NSObject {
             for (var i = 0; i < links.length; i++) {
                 var rel = links[i].getAttribute('rel');
                 if (rel && (rel.includes('apple-touch-icon') || rel.includes('icon'))) {
-                    return links[i].href;
+                    return links[i].getAttribute('href') || links[i].href;
                 }
             }
             return null;
@@ -303,33 +347,67 @@ public final class BrowserTab: NSObject {
         """
 
         webView.evaluateJavaScript(js) { [weak self] result, _ in
-            guard let self = self,
-                  let iconHref = result as? String,
-                  let iconURL = URL(string: iconHref) else { return }
+            guard let self = self, let iconHref = result as? String else { return }
 
-            var req = URLRequest(url: iconURL)
-            req.cachePolicy = .returnCacheDataElseLoad
-            req.timeoutInterval = 3.0
-
-            URLSession.shared.dataTask(with: req) { [weak self] data, response, _ in
-                guard let self = self,
-                      let httpResponse = response as? HTTPURLResponse,
-                      httpResponse.statusCode == 200,
-                      let data = data,
-                      let img = NSImage(data: data) else { return }
-
-                FaviconService.shared.cacheFavicon(img, for: host)
+            FaviconService.shared.resolveDOMFavicon(href: iconHref, documentURL: url) { [weak self] image in
+                guard let self = self, let img = image else { return }
                 DispatchQueue.main.async {
                     self.favicon = img
                     self.delegate?.browserTabDidUpdate(self)
                 }
-            }.resume()
+            }
         }
     }
 }
 
 // MARK: - WKNavigationDelegate
 extension BrowserTab: WKNavigationDelegate {
+
+    public func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let requestURL = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+
+        let scheme = (requestURL.scheme ?? "").lowercased()
+
+        // 1. Safe web schemes & blank page
+        if scheme == "https" || scheme == "http" || scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+
+        // 2. Local file protection:
+        // Remote web content (http/https) is strictly forbidden from navigating to local file://
+        if scheme == "file" {
+            if let currentURL = webView.url,
+               let currentScheme = currentURL.scheme?.lowercased(),
+               (currentScheme == "http" || currentScheme == "https") {
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+            return
+        }
+
+        // 3. External application schemes (e.g. mailto:, tel:, sms:)
+        // Only allow if user explicitly clicked a link (prevents automated background launch)
+        if navigationAction.navigationType == .linkActivated {
+            let safeExternalSchemes: Set<String> = ["mailto", "tel", "sms"]
+            if safeExternalSchemes.contains(scheme) {
+                NSWorkspace.shared.open(requestURL)
+                decisionHandler(.cancel)
+                return
+            }
+        }
+
+        // 4. Block all other dangerous/unknown schemes
+        decisionHandler(.cancel)
+    }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         errorMessage = nil
@@ -392,9 +470,13 @@ extension BrowserTab: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // Open target="_blank" links in a new tab instead of spawning a new window
+        // Open target="_blank" links in a new tab instead of spawning a new window (only for safe web schemes)
         if navigationAction.targetFrame == nil {
-            delegate?.browserTab(self, requestOpenNewTabWith: navigationAction.request)
+            if let targetURL = navigationAction.request.url,
+               let scheme = targetURL.scheme?.lowercased(),
+               (scheme == "http" || scheme == "https" || scheme == "about") {
+                delegate?.browserTab(self, requestOpenNewTabWith: navigationAction.request)
+            }
         }
         return nil
     }

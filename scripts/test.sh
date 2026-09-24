@@ -16,8 +16,10 @@ swiftc \
     -framework WebKit \
     Sources/Sansara/Core/*.swift \
     Sources/Sansara/UI/Sidebar/*.swift \
+    Sources/Sansara/UI/Settings/SettingsWindowController.swift \
     Sources/Sansara/UI/Content/ContentColors.swift \
     Sources/Sansara/UI/Content/TabStripeColors.swift \
+    Sources/Sansara/UI/Content/SearchHistoryDropdownView.swift \
     Tests/SansaraTests/SansaraTests.swift \
     -o "$PROJECT_DIR/build/test_runner"
 

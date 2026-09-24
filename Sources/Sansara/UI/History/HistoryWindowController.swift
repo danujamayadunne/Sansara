@@ -284,6 +284,7 @@ public final class HistoryWindowController: NSWindowController, NSTableViewDataS
 
         if alert.runModal() == .alertFirstButtonReturn {
             HistoryManager.shared.clearAll()
+            FaviconService.shared.clearCache()
         }
     }
 

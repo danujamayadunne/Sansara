@@ -184,6 +184,7 @@ private final class StripeTabView: NSView, NSDraggingSource {
 
     private(set) var tab: BrowserTab?
     private(set) var isEditing: Bool = false
+    private(set) var isImageMode: Bool = false
 
     private let cardBackground = NSBox()
     private let topAccentBar = NSBox()
@@ -331,10 +332,11 @@ private final class StripeTabView: NSView, NSDraggingSource {
         return self
     }
 
-    func configure(tab: BrowserTab, isSelected: Bool, groupColor: TabGroupColor? = nil) {
+    func configure(tab: BrowserTab, isSelected: Bool, groupColor: TabGroupColor? = nil, isImageMode: Bool = false) {
         self.tab = tab
         self.isTabSelected = isSelected
         self.groupColor = groupColor
+        self.isImageMode = isImageMode
 
         let size = NSSize(width: 16, height: 16)
         let scaled = NSImage(size: size, flipped: false) { rect in
@@ -394,24 +396,36 @@ private final class StripeTabView: NSView, NSDraggingSource {
     }
 
     private func updateAppearance() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         if isTabSelected {
-            cardBackground.fillColor = TabStripeColors.dynamicActiveBackground
-            cardBackground.borderColor = TabStripeColors.dynamicActiveBorder
-            cardBackground.borderWidth = 1.0
+            cardBackground.fillColor = isImageMode
+                ? (isDark ? NSColor(white: 1.0, alpha: 0.22) : NSColor.controlBackgroundColor.withAlphaComponent(0.92))
+                : TabStripeColors.dynamicActiveBackground
+            cardBackground.borderColor = isDark ? NSColor(white: 0.0, alpha: 0.35) : TabStripeColors.dynamicActiveBorder
+            cardBackground.borderWidth = 0.5
             titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
-            titleLabel.textColor = .labelColor
+            titleLabel.textColor = isDark ? .white : .labelColor
         } else if isHovered {
-            cardBackground.fillColor = TabStripeColors.dynamicHoverBackground
+            cardBackground.fillColor = isImageMode
+                ? (isDark ? NSColor(white: 0.0, alpha: 0.42) : NSColor(white: 0.0, alpha: 0.12))
+                : TabStripeColors.dynamicHoverBackground
             cardBackground.borderColor = .clear
             cardBackground.borderWidth = 0
             titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .regular)
-            titleLabel.textColor = .labelColor
+            titleLabel.textColor = isDark ? .white : .labelColor
         } else {
-            cardBackground.fillColor = TabStripeColors.dynamicInactiveBackground
-            cardBackground.borderColor = .clear
-            cardBackground.borderWidth = 0
+            // Unused / inactive tab
+            cardBackground.fillColor = isImageMode
+                ? (isDark ? NSColor(white: 0.0, alpha: 0.28) : NSColor(white: 0.0, alpha: 0.08))
+                : TabStripeColors.dynamicInactiveBackground
+            cardBackground.borderColor = isImageMode
+                ? (isDark ? NSColor(white: 0.0, alpha: 0.35) : NSColor(white: 0.0, alpha: 0.08))
+                : .clear
+            cardBackground.borderWidth = isImageMode ? 0.5 : 0
             titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .regular)
-            titleLabel.textColor = .secondaryLabelColor
+            titleLabel.textColor = isImageMode
+                ? (isDark ? NSColor(white: 1.0, alpha: 0.85) : .labelColor)
+                : .secondaryLabelColor
         }
         closeButton.isHidden = isEditing || !isHovered
     }
@@ -522,6 +536,9 @@ private final class StripeTabView: NSView, NSDraggingSource {
 
 private final class TabStripView: NSView {
 
+    var onBack: (() -> Void)?
+    var onForward: (() -> Void)?
+    var onReload: (() -> Void)?
     var onNewTab: (() -> Void)?
     var onContextMenu: (() -> NSMenu?)?
     var onDropTab: ((_ draggedTabId: UUID, _ targetView: NSView?, _ dropAfter: Bool) -> Void)?
@@ -543,7 +560,10 @@ private final class TabStripView: NSView {
     }
 
     private(set) var itemViews: [NSView] = []
-    let plusButton = NSButton()
+    let backButton = HoverIconButton()
+    let forwardButton = HoverIconButton()
+    let reloadButton = HoverIconButton()
+    let plusButton = HoverIconButton()
     private let bottomBorder = NSBox()
     private let dropIndicatorLine = NSBox()
 
@@ -561,20 +581,45 @@ private final class TabStripView: NSView {
         return true
     }
 
+    private var isImageMode: Bool = false
+
+    func setImageModeBackground(_ isImageMode: Bool) {
+        self.isImageMode = isImageMode
+        updateBackground()
+    }
+
+    private func updateBackground() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isImageMode {
+            // Add a little more gray in tab stripe so unused tabs can be seen clearly over bright artwork
+            layer?.backgroundColor = isDark
+                ? NSColor(white: 0.08, alpha: 0.55).cgColor
+                : NSColor(white: 0.20, alpha: 0.20).cgColor
+            bottomBorder.fillColor = isDark
+                ? NSColor(white: 0.0, alpha: 0.35)
+                : NSColor(white: 0.0, alpha: 0.12)
+            bottomBorder.isHidden = false
+        } else {
+            layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+            bottomBorder.fillColor = .separatorColor
+            bottomBorder.isHidden = false
+        }
+    }
+
     override func updateLayer() {
         super.updateLayer()
-        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+        updateBackground()
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+        updateBackground()
         needsDisplay = true
     }
 
     private func setup() {
         wantsLayer = true
-        layer?.backgroundColor = ContentColors.color(for: effectiveAppearance).cgColor
+        updateBackground()
 
         bottomBorder.boxType = .custom
         bottomBorder.borderWidth = 0
@@ -588,17 +633,35 @@ private final class TabStripView: NSView {
         dropIndicatorLine.isHidden = true
         addSubview(dropIndicatorLine)
 
+        let navConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+
+        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back (⌘[)")?.withSymbolConfiguration(navConfig)
+        backButton.contentTintColor = .secondaryLabelColor
+        backButton.toolTip = "Back (⌘[)"
+        backButton.target = self
+        backButton.action = #selector(didClickBack)
+        addSubview(backButton)
+
+        forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward (⌘])")?.withSymbolConfiguration(navConfig)
+        forwardButton.contentTintColor = .secondaryLabelColor
+        forwardButton.toolTip = "Forward (⌘])"
+        forwardButton.target = self
+        forwardButton.action = #selector(didClickForward)
+        addSubview(forwardButton)
+
+        reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload (⌘R)")?.withSymbolConfiguration(navConfig)
+        reloadButton.contentTintColor = .secondaryLabelColor
+        reloadButton.toolTip = "Reload (⌘R)"
+        reloadButton.target = self
+        reloadButton.action = #selector(didClickReload)
+        addSubview(reloadButton)
+
         let plusImage = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")
-        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-        plusButton.image = plusImage?.withSymbolConfiguration(config)
+        plusButton.image = plusImage?.withSymbolConfiguration(navConfig)
         plusButton.contentTintColor = .secondaryLabelColor
-        plusButton.isBordered = false
-        plusButton.title = ""
-        plusButton.wantsLayer = true
-        plusButton.layer?.cornerRadius = 5.0
         plusButton.target = self
         plusButton.action = #selector(didClickPlus)
-        plusButton.toolTip = "New Tab"
+        plusButton.toolTip = "New Tab (⌘T)"
         addSubview(plusButton)
 
         registerForDraggedTypes([
@@ -607,8 +670,27 @@ private final class TabStripView: NSView {
         ])
     }
 
+    @objc private func didClickBack() {
+        onBack?()
+    }
+
+    @objc private func didClickForward() {
+        onForward?()
+    }
+
+    @objc private func didClickReload() {
+        onReload?()
+    }
+
     @objc private func didClickPlus() {
         onNewTab?()
+    }
+
+    func updateNavButtons(canGoBack: Bool, canGoForward: Bool) {
+        backButton.isEnabled = canGoBack
+        backButton.contentTintColor = canGoBack ? .secondaryLabelColor : .tertiaryLabelColor
+        forwardButton.isEnabled = canGoForward
+        forwardButton.contentTintColor = canGoForward ? .secondaryLabelColor : .tertiaryLabelColor
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -630,6 +712,10 @@ private final class TabStripView: NSView {
             addSubview(v)
         }
         bringSubviewToFront(dropIndicatorLine)
+        bringSubviewToFront(backButton)
+        bringSubviewToFront(forwardButton)
+        bringSubviewToFront(reloadButton)
+        bringSubviewToFront(plusButton)
         needsLayout = true
         layout()
     }
@@ -645,6 +731,9 @@ private final class TabStripView: NSView {
 
         let leftPadding: CGFloat = 8
         let rightPadding: CGFloat = 8
+        let navButtonSize: CGFloat = 26
+        let navSpacing: CGFloat = 2
+        let navToTabsSpacing: CGFloat = 8
         let plusWidth: CGFloat = 26
         let plusSpacing: CGFloat = 4
         let itemSpacing: CGFloat = 3
@@ -652,9 +741,22 @@ private final class TabStripView: NSView {
         let groupHeight: CGFloat = 24
         let tabY = (bounds.height - tabHeight) / 2
         let groupY = (bounds.height - groupHeight) / 2
+        let navY = (bounds.height - navButtonSize) / 2
+
+        var navX = leftPadding
+        backButton.frame = NSRect(x: navX, y: navY, width: navButtonSize, height: navButtonSize)
+        navX += navButtonSize + navSpacing
+
+        forwardButton.frame = NSRect(x: navX, y: navY, width: navButtonSize, height: navButtonSize)
+        navX += navButtonSize + navSpacing
+
+        reloadButton.frame = NSRect(x: navX, y: navY, width: navButtonSize, height: navButtonSize)
+        navX += navButtonSize + navToTabsSpacing
+
+        let tabsStartX = navX
 
         guard !itemViews.isEmpty else {
-            plusButton.frame = NSRect(x: leftPadding, y: (bounds.height - plusWidth) / 2, width: plusWidth, height: plusWidth)
+            plusButton.frame = NSRect(x: tabsStartX, y: (bounds.height - plusWidth) / 2, width: plusWidth, height: plusWidth)
             return
         }
 
@@ -671,13 +773,13 @@ private final class TabStripView: NSView {
 
         let totalItems = itemViews.count
         let totalSpacing = CGFloat(max(0, totalItems - 1)) * itemSpacing
-        let availableWidth = bounds.width - leftPadding - rightPadding - plusWidth - plusSpacing - totalSpacing - totalGroupWidth
+        let availableWidth = bounds.width - tabsStartX - rightPadding - plusWidth - plusSpacing - totalSpacing - totalGroupWidth
 
         let maxTabWidth: CGFloat = 180
         let minTabWidth: CGFloat = 32
         let calculatedTabWidth = tabCount > 0 ? max(minTabWidth, min(maxTabWidth, availableWidth / CGFloat(tabCount))) : 0
 
-        var currentX = leftPadding
+        var currentX = tabsStartX
         for view in itemViews {
             if let groupView = view as? StripeGroupView {
                 let w = groupView.desiredWidth
@@ -861,12 +963,10 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
     private let commandReturnBadge = NSBox()
     private let commandReturnLabel = NSTextField(labelWithString: "↵")
     private let commandBookmarkButton = NSButton()
+    private let commandSuggestionsDropdown = SearchHistoryDropdownView()
 
     private var sidebarVisible: Bool = true
-
-    // Constraints for new tab view
-    private var newTabTopToStripe: NSLayoutConstraint!
-    private var newTabTopToView: NSLayoutConstraint!
+    public var onToggleSidebar: (() -> Void)?
 
     public init(tabManager: TabManager) {
         self.tabManager = tabManager
@@ -884,6 +984,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
         bgView.onAppearanceChanged = { [weak self] in
             guard let self = self else { return }
             self.tabStripView.viewDidChangeEffectiveAppearance()
+            self.updateCommandCardAppearance()
             if !self.sidebarVisible {
                 self.reloadTabStripe()
             }
@@ -893,9 +994,23 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-        setupTabStripe()
         setupUI()
+        setupTabStripe()
         setupCommandOverlay()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsDidChange),
+            name: SettingsManager.didChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func settingsDidChange() {
+        let tab = tabManager.activeTab
+        if tab == nil || (tab?.isNewTabPage ?? false) {
+            update(for: tab)
+        }
     }
 
     // MARK: - Tab Stripe
@@ -903,6 +1018,15 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
     private func setupTabStripe() {
         tabStripView.translatesAutoresizingMaskIntoConstraints = false
         tabStripView.isHidden = true
+        tabStripView.onBack = { [weak self] in
+            self?.tabManager.activeTab?.goBack()
+        }
+        tabStripView.onForward = { [weak self] in
+            self?.tabManager.activeTab?.goForward()
+        }
+        tabStripView.onReload = { [weak self] in
+            self?.tabManager.activeTab?.reload()
+        }
         tabStripView.onNewTab = { [weak self] in
             self?.tabManager.createTab(url: nil, select: true)
         }
@@ -967,8 +1091,6 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
         contentTopToStripe = webContainerView.topAnchor.constraint(equalTo: tabStripView.bottomAnchor)
         contentTopToView = webContainerView.topAnchor.constraint(equalTo: view.topAnchor)
-        newTabTopToStripe = newTabView.topAnchor.constraint(equalTo: tabStripView.bottomAnchor)
-        newTabTopToView = newTabView.topAnchor.constraint(equalTo: view.topAnchor)
 
         NSLayoutConstraint.activate([
             contentTopToView,
@@ -976,7 +1098,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
             webContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             webContainerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            newTabTopToView,
+            newTabView.topAnchor.constraint(equalTo: view.topAnchor),
             newTabView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             newTabView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             newTabView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -989,14 +1111,10 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
         if visible {
             contentTopToStripe.isActive = false
-            newTabTopToStripe.isActive = false
             contentTopToView.isActive = true
-            newTabTopToView.isActive = true
         } else {
             contentTopToView.isActive = false
-            newTabTopToView.isActive = false
             contentTopToStripe.isActive = true
-            newTabTopToStripe.isActive = true
             reloadTabStripe()
         }
     }
@@ -1026,6 +1144,8 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
             expectedDescriptors.append(.group(id: group.id, isCollapsed: group.isCollapsed))
         }
 
+        let isImageMode = (tabManager.activeTab?.isNewTabPage ?? true) && SettingsManager.shared.newTabPageMode == .image
+
         // If structure matches exactly, update in place without recreating views (preserves mouse tracking for drags)
         if tabStripView.currentItemDescriptors == expectedDescriptors && !expectedDescriptors.isEmpty {
             for view in tabStripView.itemViews {
@@ -1038,7 +1158,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
                           let currentTab = tabManager.tabs.first(where: { $0.id == tab.id }) {
                     let isSelected = (currentTab.id == tabManager.activeTabId)
                     let groupColor = currentTab.groupId.flatMap { gid in tabManager.groups.first(where: { $0.id == gid })?.color }
-                    tabView.configure(tab: currentTab, isSelected: isSelected, groupColor: groupColor)
+                    tabView.configure(tab: currentTab, isSelected: isSelected, groupColor: groupColor, isImageMode: isImageMode)
                 }
             }
             tabStripView.needsLayout = true
@@ -1071,7 +1191,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
                 if !group.isCollapsed {
                     let tabView = StripeTabView()
                     let isSelected = (tab.id == tabManager.activeTabId)
-                    tabView.configure(tab: tab, isSelected: isSelected, groupColor: group.color)
+                    tabView.configure(tab: tab, isSelected: isSelected, groupColor: group.color, isImageMode: isImageMode)
                     tabView.onSelect = { [weak self] in
                         self?.tabManager.selectTab(id: tab.id)
                     }
@@ -1090,7 +1210,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
             } else {
                 let tabView = StripeTabView()
                 let isSelected = (tab.id == tabManager.activeTabId)
-                tabView.configure(tab: tab, isSelected: isSelected, groupColor: nil)
+                tabView.configure(tab: tab, isSelected: isSelected, groupColor: nil, isImageMode: isImageMode)
                 tabView.onSelect = { [weak self] in
                     self?.tabManager.selectTab(id: tab.id)
                 }
@@ -1399,9 +1519,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
         commandCard.boxType = .custom
         commandCard.borderWidth = 1.0
-        commandCard.borderColor = .separatorColor
-        commandCard.cornerRadius = 10.0
-        commandCard.fillColor = .controlBackgroundColor
+        commandCard.cornerRadius = 23.0
         commandCard.translatesAutoresizingMaskIntoConstraints = false
         commandOverlay.addSubview(commandCard)
 
@@ -1453,6 +1571,22 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
         commandField.translatesAutoresizingMaskIntoConstraints = false
         commandCard.addSubview(commandField)
 
+        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(commandOverlayBackgroundClicked(_:)))
+        commandOverlay.addGestureRecognizer(clickGesture)
+
+        // Command suggestions dropdown
+        commandSuggestionsDropdown.translatesAutoresizingMaskIntoConstraints = false
+        commandSuggestionsDropdown.isHidden = true
+        commandOverlay.addSubview(commandSuggestionsDropdown)
+
+        commandSuggestionsDropdown.onSelect = { [weak self] item in
+            guard let self = self else { return }
+            self.commandSuggestionsDropdown.hide()
+            self.commandOverlay.isHidden = true
+            self.view.window?.makeFirstResponder(nil)
+            self.navigateTo(query: item.url.absoluteString)
+        }
+
         NSLayoutConstraint.activate([
             commandOverlay.topAnchor.constraint(equalTo: view.topAnchor),
             commandOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -1464,12 +1598,12 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
             commandCard.widthAnchor.constraint(equalToConstant: 480),
             commandCard.heightAnchor.constraint(equalToConstant: 46),
 
-            commandIcon.leadingAnchor.constraint(equalTo: commandCard.leadingAnchor, constant: 14),
+            commandIcon.leadingAnchor.constraint(equalTo: commandCard.leadingAnchor, constant: 16),
             commandIcon.centerYAnchor.constraint(equalTo: commandCard.centerYAnchor),
             commandIcon.widthAnchor.constraint(equalToConstant: 18),
             commandIcon.heightAnchor.constraint(equalToConstant: 18),
 
-            commandReturnBadge.trailingAnchor.constraint(equalTo: commandCard.trailingAnchor, constant: -12),
+            commandReturnBadge.trailingAnchor.constraint(equalTo: commandCard.trailingAnchor, constant: -14),
             commandReturnBadge.centerYAnchor.constraint(equalTo: commandCard.centerYAnchor),
             commandReturnBadge.widthAnchor.constraint(equalToConstant: 22),
             commandReturnBadge.heightAnchor.constraint(equalToConstant: 22),
@@ -1484,14 +1618,50 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
             commandField.leadingAnchor.constraint(equalTo: commandIcon.trailingAnchor, constant: 10),
             commandField.trailingAnchor.constraint(equalTo: commandBookmarkButton.leadingAnchor, constant: -6),
-            commandField.centerYAnchor.constraint(equalTo: commandCard.centerYAnchor)
+            commandField.centerYAnchor.constraint(equalTo: commandCard.centerYAnchor),
+
+            commandSuggestionsDropdown.topAnchor.constraint(equalTo: commandCard.bottomAnchor, constant: 6),
+            commandSuggestionsDropdown.centerXAnchor.constraint(equalTo: commandCard.centerXAnchor),
+            commandSuggestionsDropdown.widthAnchor.constraint(equalTo: commandCard.widthAnchor)
         ])
+
+        updateCommandCardAppearance()
+    }
+
+    private func updateCommandCardAppearance() {
+        let isDark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        commandCard.fillColor = isDark ? .black : .white
+        commandCard.borderColor = isDark ? NSColor(white: 0.0, alpha: 0.40) : NSColor(white: 0.0, alpha: 0.08)
+        commandCard.borderWidth = 0.5
+        commandReturnBadge.borderColor = isDark ? NSColor(white: 1.0, alpha: 0.12) : NSColor(white: 0.0, alpha: 0.08)
+        commandReturnBadge.fillColor = isDark ? NSColor(white: 1.0, alpha: 0.08) : NSColor(white: 0.0, alpha: 0.05)
+        commandReturnBadge.borderWidth = 0.5
+        commandReturnLabel.textColor = isDark ? .white : .secondaryLabelColor
+    }
+
+    @objc private func commandOverlayBackgroundClicked(_ gesture: NSClickGestureRecognizer) {
+        let point = gesture.location(in: commandOverlay)
+        if !commandCard.frame.contains(point) && !commandSuggestionsDropdown.frame.contains(point) {
+            commandSuggestionsDropdown.hide()
+            commandOverlay.isHidden = true
+            view.window?.makeFirstResponder(nil)
+        }
     }
 
     // MARK: - Updates
 
+    public func updateNavButtons() {
+        let tab = tabManager.activeTab
+        tabStripView.updateNavButtons(canGoBack: tab?.canGoBack ?? false, canGoForward: tab?.canGoForward ?? false)
+    }
+
     public func update(for tab: BrowserTab?) {
+        commandSuggestionsDropdown.hide()
         commandOverlay.isHidden = true
+
+        let isImageNewTab = (tab?.isNewTabPage ?? true) && SettingsManager.shared.newTabPageMode == .image
+        tabStripView.setImageModeBackground(isImageNewTab)
+        tabStripView.updateNavButtons(canGoBack: tab?.canGoBack ?? false, canGoForward: tab?.canGoForward ?? false)
 
         if !sidebarVisible {
             reloadTabStripe()
@@ -1500,13 +1670,14 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
         guard let tab = tab else {
             newTabView.isHidden = false
             webContainerView.isHidden = true
+            newTabView.setMode(SettingsManager.shared.newTabPageMode)
             return
         }
 
         if tab.isNewTabPage {
             newTabView.isHidden = false
             webContainerView.isHidden = true
-            newTabView.focus()
+            newTabView.setMode(SettingsManager.shared.newTabPageMode)
         } else {
             newTabView.isHidden = true
             webContainerView.isHidden = false
@@ -1530,8 +1701,10 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
             commandIcon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Security")?.withSymbolConfiguration(iconConfig)
             commandIcon.contentTintColor = symbol == "lock.fill" ? .secondaryLabelColor : .tertiaryLabelColor
 
+            updateCommandCardAppearance()
             commandField.stringValue = tab.url?.absoluteString ?? ""
             updateBookmarkButtonState()
+            commandSuggestionsDropdown.hide()
             commandOverlay.isHidden = false
             view.window?.makeFirstResponder(commandField)
             commandField.selectText(nil)
@@ -1560,6 +1733,7 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
 
     @objc private func commandSubmitted() {
         let text = commandField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        commandSuggestionsDropdown.hide()
         commandOverlay.isHidden = true
         view.window?.makeFirstResponder(nil)
         guard !text.isEmpty else { return }
@@ -1567,10 +1741,53 @@ public final class BrowserContentViewController: NSViewController, NewTabViewDel
     }
 
     public override func cancelOperation(_ sender: Any?) {
+        if !commandSuggestionsDropdown.isHidden {
+            commandSuggestionsDropdown.hide()
+            return
+        }
         if !commandOverlay.isHidden {
             commandOverlay.isHidden = true
             view.window?.makeFirstResponder(nil)
         }
+    }
+
+    // MARK: - NSTextFieldDelegate
+
+    public func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === commandField else { return }
+        let query = commandField.stringValue
+        let items = SearchSuggestionsProvider.shared.suggestions(for: query)
+        if items.isEmpty {
+            commandSuggestionsDropdown.hide()
+        } else {
+            commandSuggestionsDropdown.update(items: items)
+        }
+    }
+
+    public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === commandField, !commandSuggestionsDropdown.isHidden else { return false }
+
+        if commandSelector == #selector(NSResponder.moveDown(_:)) {
+            commandSuggestionsDropdown.selectNext()
+            return true
+        } else if commandSelector == #selector(NSResponder.moveUp(_:)) {
+            commandSuggestionsDropdown.selectPrevious()
+            return true
+        } else if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            if let item = commandSuggestionsDropdown.selectedItem {
+                commandSuggestionsDropdown.hide()
+                commandOverlay.isHidden = true
+                view.window?.makeFirstResponder(nil)
+                navigateTo(query: item.url.absoluteString)
+                return true
+            }
+            commandSuggestionsDropdown.hide()
+            return false
+        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            commandSuggestionsDropdown.hide()
+            return true
+        }
+        return false
     }
 
     // MARK: - NewTabViewDelegate

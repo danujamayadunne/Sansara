@@ -218,9 +218,9 @@ public final class SidebarViewController: NSViewController {
         navStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(navStack)
 
-        backButton = createNavButton(symbol: "chevron.left", action: #selector(didClickBack), tooltip: "Back")
-        forwardButton = createNavButton(symbol: "chevron.right", action: #selector(didClickForward), tooltip: "Forward")
-        reloadButton = createNavButton(symbol: "arrow.clockwise", action: #selector(didClickReload), tooltip: "Reload")
+        backButton = createNavButton(symbol: "chevron.left", action: #selector(didClickBack), tooltip: "Back (⌘[)")
+        forwardButton = createNavButton(symbol: "chevron.right", action: #selector(didClickForward), tooltip: "Forward (⌘])")
+        reloadButton = createNavButton(symbol: "arrow.clockwise", action: #selector(didClickReload), tooltip: "Reload (⌘R)")
 
         navStack.addArrangedSubview(backButton)
         navStack.addArrangedSubview(forwardButton)
@@ -235,8 +235,8 @@ public final class SidebarViewController: NSViewController {
         view.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            // Dynamic top spacing respecting system titlebar area
-            navStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            // Positioned right at the top of the sidebar without empty blank space
+            navStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             navStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
             scrollView.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
@@ -246,22 +246,18 @@ public final class SidebarViewController: NSViewController {
         ])
     }
 
-    private func createNavButton(symbol: String, action: Selector, tooltip: String) -> NSButton {
-        let button = NSButton()
-        button.isBordered = false
-        button.title = ""
+    private func createNavButton(symbol: String, action: Selector, tooltip: String) -> HoverIconButton {
+        let button = HoverIconButton()
         let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
         let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         button.image = symbolImage?.withSymbolConfiguration(config)
         button.contentTintColor = .secondaryLabelColor
         button.toolTip = tooltip
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 5.0
         button.target = self
         button.action = action
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return button
     }
 
